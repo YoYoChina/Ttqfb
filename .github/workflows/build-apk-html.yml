@@ -5,12 +5,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+      - name: 检出代码（升级 v5 适配 Node 24）
+        uses: actions/checkout@v5
 
-      - name: 整理目录（文件在根目录也能打包）
+      - name: 整理目录
         run: |
           mkdir -p mobile_app
           for f in index.html app.css api.js app.js manifest.json sw.js; do
@@ -19,19 +19,31 @@ jobs:
           ls -la mobile_app/
           test -f mobile_app/index.html || (echo "错误：找不到 index.html" && exit 1)
 
-      - name: 配置 Node
-        uses: actions/setup-node@v4
+      - name: 配置 Node 20（项目自身用 Node 20，与运行器 Node 24 不冲突）
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
-      - name: 配置 Java 17
-        uses: actions/setup-java@v4
+      - name: 配置 Java 17（升级 v5/v6 适配 Node 24）
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 配置 Android SDK
-        uses: android-actions/setup-android@v3
+      - name: 手动配置 Android SDK（绕过 setup-android@v3 的 tools 废弃坑）
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          # 下载 cmdline-tools
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdline.zip
+          unzip -q cmdline.zip -d $ANDROID_SDK_ROOT/cmdline-tools
+          mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
+          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+          # 接受协议并安装（跳过废弃的 tools，只装必要组件）
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
 
       - name: 准备 Capacitor 工程
         run: |
@@ -52,15 +64,15 @@ jobs:
               print('已开启明文 HTTP')
           PY
 
-      - name: 构建 APK
+      - name: 构建 APK（增加 Gradle 内存防 OOM）
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon -q
+          ./gradlew assembleDebug --no-daemon -q -Dorg.gradle.jvmargs="-Xmx2048m"
           ls -lh app/build/outputs/apk/debug/
 
       - name: 上传 APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: xingjike-app-apk
           path: android/app/build/outputs/apk/debug/*.apk
