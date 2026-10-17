@@ -1,0 +1,10 @@
+{
+  "name": "星极客",
+  "short_name": "星极客",
+  "start_url": "index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111827",
+  "theme_color": "#07C160",
+  "icons": []
+}
