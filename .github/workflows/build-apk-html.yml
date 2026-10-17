@@ -5,43 +5,43 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04 # 锁定旧版系统，规避 Node 24 强制环境
     steps:
-      - name: 检出代码（升级 v5 适配 Node 24）
-        uses: actions/checkout@v5
+      - name: 检出代码
+        uses: actions/checkout@v4 # v4 在 ubuntu-22.04 下稳定跑 Node 20
 
-      - name: 整理目录
+      - name: 整理目录（详细日志）
         run: |
+          set -x # 打印每条命令，方便排错
           mkdir -p mobile_app
           for f in index.html app.css api.js app.js manifest.json sw.js; do
-            [ -f "$f" ] && [ ! -f "mobile_app/$f" ] && cp "$f" mobile_app/ && echo "已归位 $f"
+            if [ -f "$f" ]; then cp "$f" mobile_app/ && echo "归位 $f"; else echo "警告: 缺 $f"; fi
           done
           ls -la mobile_app/
-          test -f mobile_app/index.html || (echo "错误：找不到 index.html" && exit 1)
+          if [ ! -f "mobile_app/index.html" ]; then echo "致命: 无 index.html"; exit 1; fi
 
-      - name: 配置 Node 20（项目自身用 Node 20，与运行器 Node 24 不冲突）
-        uses: actions/setup-node@v5
+      - name: 配置 Node 20
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 配置 Java 17（升级 v5/v6 适配 Node 24）
-        uses: actions/setup-java@v6
+      - name: 配置 Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 手动配置 Android SDK（绕过 setup-android@v3 的 tools 废弃坑）
+      - name: 手动配置 Android SDK (锁定 34，适配 Capacitor 6)
         run: |
           export ANDROID_SDK_ROOT=$HOME/android-sdk
           mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          # 下载 cmdline-tools
           curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdline.zip
           unzip -q cmdline.zip -d $ANDROID_SDK_ROOT/cmdline-tools
           mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
           export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
-          # 接受协议并安装（跳过废弃的 tools，只装必要组件）
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          # Capacitor 6 官方匹配 SDK 34
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
 
@@ -64,7 +64,7 @@ jobs:
               print('已开启明文 HTTP')
           PY
 
-      - name: 构建 APK（增加 Gradle 内存防 OOM）
+      - name: 构建 APK
         run: |
           cd android
           chmod +x gradlew
@@ -72,7 +72,7 @@ jobs:
           ls -lh app/build/outputs/apk/debug/
 
       - name: 上传 APK
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: xingjike-app-apk
           path: android/app/build/outputs/apk/debug/*.apk
