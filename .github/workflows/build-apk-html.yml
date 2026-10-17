@@ -1,24 +1,23 @@
-name: 打包 App（HTML 版 APK）
+name: 打包 App(HTML 版 APK)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04 # 锁定旧版系统，规避 Node 24 强制环境
+    runs-on: ubuntu-22.04 # 锁定稳定版系统，规避 Node 24 坑
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4 # v4 在 ubuntu-22.04 下稳定跑 Node 20
+        uses: actions/checkout@v4
 
-      - name: 整理目录（详细日志）
+      - name: 整理目录
         run: |
-          set -x # 打印每条命令，方便排错
           mkdir -p mobile_app
           for f in index.html app.css api.js app.js manifest.json sw.js; do
-            if [ -f "$f" ]; then cp "$f" mobile_app/ && echo "归位 $f"; else echo "警告: 缺 $f"; fi
+            [ -f "$f" ] && cp "$f" mobile_app/ && echo "归位 $f"
           done
           ls -la mobile_app/
-          if [ ! -f "mobile_app/index.html" ]; then echo "致命: 无 index.html"; exit 1; fi
+          test -f mobile_app/index.html || (echo "错误：找不到 index.html" && exit 1)
 
       - name: 配置 Node 20
         uses: actions/setup-node@v4
@@ -31,19 +30,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 手动配置 Android SDK (锁定 34，适配 Capacitor 6)
+      - name: 统一 Android SDK 环境 (解决冲突 + 适配 Android 8+)
         run: |
-          export ANDROID_SDK_ROOT=$HOME/android-sdk
-          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdline.zip
-          unzip -q cmdline.zip -d $ANDROID_SDK_ROOT/cmdline-tools
-          mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
-          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
-          yes | sdkmanager --licenses
-          # Capacitor 6 官方匹配 SDK 34
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
+          # GitHub 自带 SDK 在 /usr/local/lib/android/sdk，直接复用，不再手动下载
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          # 确保 SDK 34 和构建工具已安装（Capacitor 6 官方匹配）
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH" >> $GITHUB_ENV
+          echo "SDK 路径已统一为: $ANDROID_HOME"
 
       - name: 准备 Capacitor 工程
         run: |
@@ -52,6 +49,14 @@ jobs:
           npx cap init "星极客" com.xingjike.app --web-dir=mobile_app
           npx cap add android
           npx cap sync android
+
+      - name: 锁定 Android 8+ 兼容 (minSdk=26) & SDK 34
+        run: |
+          f=android/variables.gradle
+          sed -i 's/minSdkVersion = [0-9]*/minSdkVersion = 26/' "$f"
+          sed -i 's/compileSdkVersion = [0-9]*/compileSdkVersion = 34/' "$f"
+          sed -i 's/targetSdkVersion = [0-9]*/targetSdkVersion = 34/' "$f"
+          grep -E "minSdkVersion|compileSdkVersion|targetSdkVersion" "$f"
 
       - name: 允许 HTTP 明文
         run: |
@@ -64,9 +69,11 @@ jobs:
               print('已开启明文 HTTP')
           PY
 
-      - name: 构建 APK
+      - name: 构建 APK (清理冲突的 local.properties)
         run: |
           cd android
+          # 防止旧路径残留导致 Gradle 再次冲突
+          rm -f local.properties
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon -q -Dorg.gradle.jvmargs="-Xmx2048m"
           ls -lh app/build/outputs/apk/debug/
