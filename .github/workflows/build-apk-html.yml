@@ -1,0 +1,66 @@
+name: 打包 App（HTML 版 APK）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 整理目录（文件在根目录也能打包）
+        run: |
+          mkdir -p mobile_app
+          for f in index.html app.css api.js app.js manifest.json sw.js; do
+            [ -f "$f" ] && [ ! -f "mobile_app/$f" ] && cp "$f" mobile_app/ && echo "已归位 $f"
+          done
+          ls -la mobile_app/
+          test -f mobile_app/index.html || (echo "错误：找不到 index.html" && exit 1)
+
+      - name: 配置 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 配置 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 准备 Capacitor 工程
+        run: |
+          npm init -y >/dev/null
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 --no-audit --no-fund
+          npx cap init "星极客" com.xingjike.app --web-dir=mobile_app
+          npx cap add android
+          npx cap sync android
+
+      - name: 允许 HTTP 明文
+        run: |
+          python3 - <<'PY'
+          p='android/app/src/main/AndroidManifest.xml'
+          s=open(p,encoding='utf-8').read()
+          if 'usesCleartextTraffic' not in s:
+              s=s.replace('<application', '<application\n        android:usesCleartextTraffic="true"',1)
+              open(p,'w',encoding='utf-8').write(s)
+              print('已开启明文 HTTP')
+          PY
+
+      - name: 构建 APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon -q
+          ls -lh app/build/outputs/apk/debug/
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: xingjike-app-apk
+          path: android/app/build/outputs/apk/debug/*.apk
