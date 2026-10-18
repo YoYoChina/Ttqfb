@@ -6,7 +6,7 @@
 (function (global) {
   'use strict';
 
-  var DEF = 'http://192.168.1.8:5001';
+  var DEF = 'https://api.xiaoxing666.top';
 
   var S = {
     base: localStorage.getItem('xjk_base') || DEF,
@@ -101,7 +101,7 @@
     return new Promise(function (resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open(method, url, true);
-      xhr.timeout = opt.timeout || 60000;
+      xhr.timeout = opt.timeout || 8000;
 
       if (S.token) xhr.setRequestHeader('Authorization', 'Bearer ' + S.token);
 
@@ -169,7 +169,7 @@
   function upload(file, fields, fieldName, progressText) {
     return req('/api/upload', {
       file: file, fields: fields || {}, fieldName: fieldName || 'file',
-      progressText: progressText || '上传中…'
+      progressText: progressText || '上传中…', timeout: 180000
     });
   }
 

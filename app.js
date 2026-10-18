@@ -39,7 +39,7 @@ function go(name, opt) {
   opt = opt || {};
   ['login', 'chats', 'chat', 'discover', 'contest', 'me', 'sub'].forEach(function (p) {
     var el = $('page-' + p);
-    if (el) el.classList.toggle('active', p === name);
+    if (el) el.classList.toggle('show', p === name);
   });
   $('tabbar').style.display = (name === 'login' || name === 'chat') ? 'none' : 'flex';
   window.scrollTo(0, 0);
@@ -800,18 +800,31 @@ setTimeout(hideSplash, 1600);
 
 /* ---------- 启动 ---------- */
 (function boot() {
+  /* 关键：先立刻把页面画出来（本地已登录则进消息页，否则登录页），
+     绝不等网络请求，避免出现白屏。之后再异步探测服务器。 */
+  try {
+    if (S.token && S.me) go('chats', { load: loadChats });
+    else go('login');
+  } catch (e) { go('login'); }
+  hideSplash();
+
+  /* 绝对兜底：2.5 秒后若仍无任何页面显示，强制进登录页 */
+  setTimeout(function () {
+    var any = document.querySelector('.page.show');
+    if (!any) { go('login'); hideSplash(); }
+  }, 2500);
+
+  /* 异步探测服务器，只更新提示文字，不再决定页面去留 */
   API.get('/api/hello', null, true).then(function () {
     if (S.token) {
       API.get('/api/me', null, true).then(function (r) {
         S.me = r.user; API.save();
         go('chats', { load: loadChats }); loadMe(); loadDiscover(); loadContests();
-      }).catch(function () { API.clearSession(); go('login'); hideSplash(); });
-    } else { go('login'); hideSplash(); }
+      }).catch(function () { API.clearSession(); go('login'); });
+    }
   }).catch(function () {
-    go('login');
     var t = $('lg-tip');
     if (t) t.textContent = '连不上服务器，点下方"服务器设置"';
-    hideSplash();
   });
 })();
 
