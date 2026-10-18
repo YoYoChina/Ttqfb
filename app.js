@@ -34,7 +34,23 @@ function skeleton(n, box) {
 }
 
 /* ---------- 页面路由 ---------- */
-var stack = [];
+var stack = [];          // 子页层级栈：每层记录返回目标与重绘函数
+var curTab = 'chats';    // 当前底部 Tab
+
+function setTab(t) {
+  curTab = t;
+  document.querySelectorAll('.tb').forEach(function (x) {
+    x.classList.toggle('on', x.getAttribute('data-tab') === t);
+  });
+}
+function tabLoader(t) {
+  return t === 'chats' ? loadChats : t === 'me' ? loadMe
+       : t === 'discover' ? loadDiscover : t === 'contest' ? loadContests : null;
+}
+function goTab(t) {
+  setTab(t);
+  go(t, { load: tabLoader(t) });
+}
 function go(name, opt) {
   opt = opt || {};
   ['login', 'chats', 'chat', 'discover', 'contest', 'me', 'sub'].forEach(function (p) {
@@ -47,28 +63,67 @@ function go(name, opt) {
   if (sc) sc.scrollTop = 0;
   if (opt.load) opt.load();
 }
-function push(name, title, loadFn) {
-  stack.push({ name: name });
-  $('sub-title').textContent = title || '';
-  $('sub-act').textContent = '';
+function push(name, title, loadFn, opt) {
+  opt = opt || {};
+  stack.push({ name: name, title: title || '', loadFn: loadFn,
+               tab: opt.tab || curTab, act: opt.act || '',
+               actFn: opt.actFn || null });
+  renderSub();
   go('sub');
   skeleton(3);
   if (loadFn) loadFn();
 }
-function back() {
-  if (stack.length) stack.pop();
-  go('chats');
-  loadChats();
+function renderSub() {
+  var top = stack[stack.length - 1];
+  if (!top) return;
+  $('sub-title').textContent = top.title;
+  var a = $('sub-act');
+  a.textContent = top.act || '';
+  a.onclick = top.actFn || function () { toast(''); };
+  a.style.visibility = top.act ? 'visible' : 'hidden';
 }
+/* 刷新当前子页：重新拉取数据，但不新增层级（修复"返回一次回到首页"） */
+function reloadSub() {
+  var top = stack[stack.length - 1];
+  if (!top) return;
+  skeleton(3);
+  if (top.loadFn) top.loadFn();
+  else $('sub-body').innerHTML = '';
+}
+
+/* 返回上一层：有子页就回上一层子页，没有才回底部 Tab */
+function back() {
+  stack.pop();
+  var prev = stack[stack.length - 1];
+  if (prev) {
+    renderSub();
+    go('sub');
+    if (prev.loadFn) prev.loadFn();
+    else $('sub-body').innerHTML = '';
+  } else {
+    goTab(curTab);
+  }
+}
+/* Android 物理返回键 */
+function onBackKey() {
+  if (document.getElementById('page-chat').classList.contains('show')) {
+    curRoom = null; goTab(curTab); return;
+  }
+  var mask = document.getElementById('mask');
+  if (mask && mask.classList.contains('show')) { closeSheet && closeSheet(); return; }
+  if (document.getElementById('page-sub').classList.contains('show')) { back(); return; }
+  if (curTab !== 'chats') { goTab('chats'); return; }
+}
+document.addEventListener('backbutton', function (e) { onBackKey(); });
+window.addEventListener('popstate', function () { onBackKey(); });
 
 /* ---------- 底部 Tab ---------- */
 document.addEventListener('click', function (e) {
   var tb = e.target.closest ? e.target.closest('.tb') : null;
   if (tb) {
     var t = tb.getAttribute('data-tab');
-    document.querySelectorAll('.tb').forEach(function (x) { x.classList.remove('on'); });
-    tb.classList.add('on');
-    go(t, { load: t === 'chats' ? loadChats : t === 'me' ? loadMe : t === 'discover' ? loadDiscover : t === 'contest' ? loadContests : null });
+    stack = [];
+    goTab(t);
   }
 });
 
@@ -98,8 +153,20 @@ function promptSheet(title, fields, onOk) {
   var h = '<div style="padding:16px 16px 6px"><div style="font-size:16px;font-weight:600;text-align:center;margin-bottom:12px">'
         + esc(title) + '</div>';
   fields.forEach(function (f) {
-    h += '<input class="inp" id="pf-' + f.key + '" placeholder="' + esc(f.ph || '') + '"'
-       + (f.type ? ' type="' + f.type + '"' : '') + ' value="' + esc(f.val || '') + '">';
+    if (f.type === 'textarea') {
+      h += '<textarea class="inp inp-area" id="pf-' + f.key + '" placeholder="' + esc(f.ph || '') + '"'
+         + (f.rows ? ' rows="' + f.rows + '"' : ' rows="5"') + '>' + esc(f.val || '') + '</textarea>';
+    } else if (f.type === 'select') {
+      h += '<select class="inp" id="pf-' + f.key + '">';
+      (f.options || []).forEach(function (o) {
+        h += '<option value="' + esc(o.value) + '"'
+           + (String(o.value) === String(f.val) ? ' selected' : '') + '>' + esc(o.text) + '</option>';
+      });
+      h += '</select>';
+    } else {
+      h += '<input class="inp" id="pf-' + f.key + '" placeholder="' + esc(f.ph || '') + '"'
+         + (f.type ? ' type="' + f.type + '"' : '') + ' value="' + esc(f.val || '') + '">';
+    }
   });
   h += '<button class="btn-main" id="pf-ok" style="margin-top:12px">确 定</button>'
      + '<div class="sheet-cancel" id="sheet-cancel">取消</div></div>';
@@ -108,7 +175,12 @@ function promptSheet(title, fields, onOk) {
   $('sheet-cancel').onclick = closeSheet;
   $('pf-ok').onclick = function () {
     var d = {};
-    fields.forEach(function (f) { d[f.key] = $('pf-' + f.key).value; });
+    var bad = null;
+    fields.forEach(function (f) {
+      d[f.key] = $('pf-' + f.key).value;
+      if (f.required && !String(d[f.key] || '').trim() && !bad) bad = f;
+    });
+    if (bad) { toast('请填写' + (bad.ph || bad.key)); return; }
     closeSheet();
     onOk(d);
   };
@@ -122,11 +194,18 @@ window.App = { gotoLogin: gotoLogin };
 
 function afterLogin(u) {
   API.setSession(S.token, u);
-  document.querySelectorAll('.tb').forEach(function (x) { x.classList.remove('on'); });
-  document.querySelector('.tb[data-tab="chats"]').classList.add('on');
+  try { localStorage.setItem('xjk_lastuser', u.username || ''); } catch (e) {}
+  stack = []; curTab = 'chats'; setTab('chats');
   go('chats', { load: loadChats });
   loadMe();
 }
+/* 登录页回填上次账号 */
+(function () {
+  try {
+    var lu = localStorage.getItem('xjk_lastuser') || '';
+    if (lu && $('lg-user')) $('lg-user').value = lu;
+  } catch (e) {}
+})();
 
 $('lg-btn').onclick = function () {
   var u = $('lg-user').value.trim(), p = $('lg-pass').value.trim();
@@ -135,10 +214,27 @@ $('lg-btn').onclick = function () {
   API.req('/api/auth/login', { data: { username: u, password: p }, loadingText: '登录中…' })
     .then(function (r) {
       S.token = r.token;
+      /* 自动登录：勾选后保存密码，下次启动自动登录；未勾选也保留 token 免登录 */
+      var keep = $('lg-keep');
+      if (keep && keep.checked) {
+        try { localStorage.setItem('xjk_autopw', p); } catch (e) {}
+      } else {
+        try { localStorage.removeItem('xjk_autopw'); } catch (e) {}
+      }
       afterLogin(r.user);
     })
     .catch(function (e) { $('lg-tip').textContent = e.msg || '登录失败'; });
 };
+/* 自动登录：有账号密码就直接登，不再显示登录页 */
+function tryAutoLogin() {
+  var u = ''; try { u = localStorage.getItem('xjk_lastuser') || ''; } catch (e) {}
+  var pw = ''; try { pw = localStorage.getItem('xjk_autopw') || ''; } catch (e) {}
+  if (!u || !pw) return false;
+  API.req('/api/auth/login', { data: { username: u, password: pw }, silent: true })
+    .then(function (r) { S.token = r.token; afterLogin(r.user); })
+    .catch(function () { /* 自动登录失败就留在登录页，不影响手动登录 */ });
+  return true;
+}
 $('lg-reg').onclick = function () {
   promptSheet('注册账号', [
     { key: 'username', ph: '用户名（2-32位）' },
@@ -179,50 +275,81 @@ function loadChats() {
          + '</div><div class="chat-right"><div class="chat-time">' + esc(c.last_time || '') + '</div></div></div>';
     });
     box.innerHTML = h;
-  }).catch(function () { box.innerHTML = '<div class="empty">加载失败，检查服务器</div>'; });
+  }).catch(function (e) {
+    box.innerHTML = '<div class="empty"><div class="empty-ico">⚠️</div>'
+      + '<div class="empty-t">加载失败</div>'
+      + '<div class="empty-d">' + esc((e && e.msg) || '请检查服务器地址') + '</div>'
+      + '<button class="btn-retry" id="chats-retry">重新加载</button></div>';
+    var b = document.getElementById('chats-retry');
+    if (b) b.onclick = loadChats;
+  });
 }
 $('chats-new').onclick = function () {
   sheet([
-    { text: '发起私聊', fn: function () { pickUser(function (u) { createRoom([u.id]); }); } },
-    { text: '创建群聊', fn: function () { pickUser(function () { createRoom(selIds); }); } }
+    { text: '发起私聊', fn: function () { pickUser('single'); } },
+    { text: '创建群聊', fn: function () { pickUser('multi'); } }
   ]);
 };
 var selIds = [];
-function pickUser(cb) {
-  selIds = [];
+var pickMode = 'single';
+function pickUser(mode) {
+  selIds = []; pickMode = mode || 'single';
+  var multi = pickMode === 'multi';
+  $('sub-title').textContent = multi ? '选择群成员' : '选择联系人';
+  $('sub-body').innerHTML = '<div class="skel"><div class="skel-row w80"></div><div class="skel-row w60"></div></div>';
+  go('sub');
   API.get('/api/users').then(function (r) {
-    var h = '<div class="scroll" style="max-height:60vh;overflow:auto">';
+    var h = '';
     (r.items || []).forEach(function (u) {
-      if (u.id === S.me.id) return;
+      if (S.me && u.id === S.me.id) return;
       h += '<div class="cell" data-uid="' + u.id + '">' + AV(u.avatar, '')
-         + '<span class="cell-txt">' + esc(u.name || u.username) + '</span><span class="cell-arrow">✓</span></div>';
+         + '<span class="cell-txt">' + esc(u.name || u.username) + '</span>'
+         + '<span class="cell-arrow pick-tick">✓</span></div>';
     });
-    h += '</div>';
-    $('sub-title').textContent = '选择联系人';
+    if (!h) h = '<div class="empty">还没有其他用户</div>';
     $('sub-body').innerHTML = h;
-    go('sub');
-    var multi = cb.toString().indexOf('selIds') >= 0;
+    var top = stack[stack.length - 1];
+    if (top) {
+      top.act = multi ? '确定(0)' : '';
+      top.actFn = function () { doCreateRoom(); };
+      renderSub();
+    }
     $('sub-body').onclick = function (e) {
       var c = e.target.closest('.cell'); if (!c) return;
       var uid = +c.getAttribute('data-uid');
       var i = selIds.indexOf(uid);
-      if (i >= 0) { selIds.splice(i, 1); c.style.opacity = 1; }
-      else { selIds.push(uid); c.style.opacity = .5; }
-      if (!multi && selIds.length) { back2(); cb({ id: selIds[0] }); }
+      if (i >= 0) { selIds.splice(i, 1); c.classList.remove('picked'); }
+      else { selIds.push(uid); c.classList.add('picked'); }
+      if (multi) {
+        if (top) { top.act = '确定(' + selIds.length + ')'; renderSub(); }
+      } else if (selIds.length) {
+        doCreateRoom();
+      }
     };
-    $('sub-act').textContent = multi ? '确定' : '';
-    $('sub-act').onclick = function () { if (selIds.length) { back2(); cb({ id: selIds[0] }); } };
+  }).catch(function (e) {
+    $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
   });
 }
-function back2() { stack.pop(); }
-function createRoom(ids) {
-  var payload = (ids.length > 1)
-    ? { kind: 'group', name: '群聊', user_ids: ids }
-    : { kind: 'private', user_id: ids[0] };
+function doCreateRoom() {
+  if (!selIds.length) { toast('请先选择联系人'); return; }
+  var multi = pickMode === 'multi';
+  var payload;
+  if (multi) {
+    payload = { kind: 'group', name: '群聊(' + (selIds.length + 1) + ')', user_ids: selIds };
+  } else {
+    payload = { kind: 'private', user_id: selIds[0] };
+  }
   API.req('/api/chat/create', { data: payload, loadingText: '创建中…' })
-    .then(function (r) { openChat(r.room_id || r.id); })
+    .then(function (r) {
+      stack = [];
+      var rid = r.room_id || r.id;
+      toast(multi ? '群聊已创建' : (r.existed ? '已进入会话' : '会话已创建'));
+      goTab('chats');
+      openChat(rid);
+    })
     .catch(function (e) { toast(e.msg || '创建失败'); });
 }
+function back2() { stack.pop(); }
 document.addEventListener('click', function (e) {
   var it = e.target.closest ? e.target.closest('.chat-item') : null;
   if (it) openChat(+it.getAttribute('data-rid'));
@@ -447,11 +574,8 @@ document.addEventListener('click', function (e) {
   var c = e.target.closest ? e.target.closest('[data-go]') : null;
   if (!c) return;
   var t = c.getAttribute('data-go');
-  if (t === 'moments') push('moments', '动态', function () {
-    API.get('/api/moments', { offset: 0 }, true).then(function (r) {
-      $('sub-body').innerHTML = momentList(r.items || []);
-    });
-  });
+  if (t === 'moments') push('moments', '动态', function () { loadMomentsPage(); },
+    { act: '发动态', actFn: writeMoment });
   else if (t === 'articles') openArticles();
   else if (t === 'novels') openNovels();
   else if (t === 'forum') openForum();
@@ -506,6 +630,22 @@ function writeArticle() {
 }
 
 /* ---------- 小说 ---------- */
+function loadMomentsPage() {
+  API.get('/api/moments', { offset: 0 }, true).then(function (r) {
+    $('sub-body').innerHTML = momentList(r.items || []);
+  }).catch(function (e) {
+    $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
+  });
+}
+function writeMoment() {
+  promptSheet('发动态', [{ key: 'content', ph: '说点什么…', type: 'textarea', rows: 4, required: true }],
+    function (d) {
+      API.req('/api/moments', { data: { content: d.content }, loadingText: '发布中…' })
+        .then(function () { toast('已发布'); loadMomentsPage(); })
+        .catch(function (e) { toast(e.msg || '发布失败'); });
+    });
+}
+
 function openNovels() {
   push('novels', '小说连载', function () {
     API.get('/api/novels', null, true).then(function (r) {
@@ -513,9 +653,29 @@ function openNovels() {
       (r.items || []).forEach(function (n) {
         h += '<div class="list-item" data-nid="' + n.id + '">'
            + '<div class="list-title">' + esc(n.title) + '</div>'
-           + '<div class="list-sub">' + esc(n.author_name) + ' · ' + n.chapter_count + ' 章 · ' + esc(n.status) + '</div></div>';
+           + '<div class="list-sub">' + esc(n.author_name) + ' · ' + n.chapter_count + ' 章 · ' + esc(n.status_cn || n.status) + '</div></div>';
       });
       $('sub-body').innerHTML = h || '<div class="empty">暂无小说</div>';
+    }).catch(function (e) {
+      $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
+    });
+  }, { act: '写小说', actFn: writeNovel });
+}
+function writeNovel() {
+  API.get('/api/novel-categories', null, true).then(function (r) {
+    var opts = (r.items || []).map(function (c) { return { value: c.id, text: c.name }; });
+    promptSheet('新建小说', [
+      { key: 'title', ph: '小说标题', required: true },
+      { key: 'intro', ph: '作品简介', type: 'textarea', rows: 3 },
+      { key: 'category_id', ph: '分区', type: 'select', options: opts,
+        val: opts.length ? opts[0].value : '' },
+      { key: 'status', ph: '状态', type: 'select',
+        options: [{ value: 'serializing', text: '连载中' }, { value: 'finished', text: '已完结' }],
+        val: 'serializing' }
+    ], function (d) {
+      API.req('/api/novels', { data: d, loadingText: '创建中…' })
+        .then(function (r) { toast('已创建'); openNovel(r.novel_id); })
+        .catch(function (e) { toast(e.msg || '创建失败'); });
     });
   });
 }
@@ -527,14 +687,33 @@ function openNovel(nid) {
   push('novel', '小说', function () {
     API.get('/api/novels/' + nid, null, true).then(function (r) {
       var n = r.novel, h = '<div class="article-hd"><h2>' + esc(n.title) + '</h2>'
-        + '<div class="article-meta">' + esc(n.author_name) + ' · ' + esc(n.status) + '</div>'
-        + '<p style="color:#666;font-size:14px">' + esc(n.intro) + '</p></div><div class="sec-title">目录</div>';
+        + '<div class="article-meta">' + esc(n.author_name) + ' · ' + esc(n.status_cn || n.status) + '</div>'
+        + '<p class="novel-intro">' + esc(n.intro || n.summary || '暂无简介') + '</p></div>'
+        + '<div class="sec-title">目录（' + ((n.chapters || []).length) + ' 章）</div>';
+      if (!(n.chapters || []).length) h += '<div class="empty">还没有章节</div>';
       (n.chapters || []).forEach(function (c) {
         h += '<div class="list-item" data-cid="' + c.id + '"><div class="list-title">' + esc(c.title) + '</div>'
-           + '<div class="list-sub">' + c.words + ' 字 · ' + esc(c.created_at) + '</div></div>';
+           + '<div class="list-sub">' + (c.words || 0) + ' 字 · ' + esc(c.created_at || '') + '</div></div>';
       });
       $('sub-body').innerHTML = h;
+      // 作者本人可写章节
+      if (n.author_id && S.me && n.author_id === S.me.id) {
+        var top = stack[stack.length - 1];
+        if (top) { top.act = '写章节'; top.actFn = function () { writeChapter(nid); }; renderSub(); }
+      }
+    }).catch(function (e) {
+      $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
     });
+  });
+}
+function writeChapter(nid) {
+  promptSheet('写章节', [
+    { key: 'title', ph: '章节标题', required: true },
+    { key: 'content', ph: '正文', type: 'textarea', rows: 8, required: true }
+  ], function (d) {
+    API.req('/api/novels/' + nid + '/chapters', { data: d, loadingText: '发布中…' })
+      .then(function (r) { toast('已发布'); openChapter(r.chapter_id); })
+      .catch(function (e) { toast(e.msg || '发布失败'); });
   });
 }
 document.addEventListener('click', function (e) {
@@ -621,6 +800,24 @@ function openThread(tid) {
  *  比赛
  * ============================================================ */
 var ctFilter = 'all';
+function phaseCls(ph) {
+  return ph === 'running' ? 'ph-run' : ph === 'registering' ? 'ph-reg'
+       : ph === 'ended' ? 'ph-end' : ph === 'before_start' ? 'ph-wait' : 'ph-none';
+}
+/* 赛程进度条：初赛 → 预决赛 → 决赛 */
+function stageBar(c) {
+  var arr = c.stages_done || [];
+  if (!arr.length) return '';
+  var h = '<div class="stage-bar">';
+  arr.forEach(function (st, i) {
+    var cls = st.current ? 'st-cur' : (st.done ? 'st-done' : 'st-todo');
+    h += '<span class="st ' + cls + '">' + esc(st.name) + '</span>';
+    if (i < arr.length - 1) h += '<span class="st-line ' + (st.done ? 'st-done' : '') + '"></span>';
+  });
+  h += '</div>';
+  return h;
+}
+
 function loadContests() {
   var box = $('ct-list');
   box.innerHTML = '<div class="skel"><div class="skel-row w80"></div><div class="skel-row w60"></div></div>';
@@ -632,12 +829,16 @@ function loadContests() {
     if (!list.length) { box.innerHTML = '<div class="empty">暂无比赛</div>'; return; }
     var h = '';
     list.forEach(function (c) {
+      var stageTxt = (c.cur_stage) ? c.cur_stage
+                   : ((c.stages || []).length ? (c.stages[0]) : '');
       h += '<div class="ct-card" data-cid="' + c.id + '">'
          + '<div class="ct-top"><span class="ct-name">' + esc(c.title) + '</span>'
-         + '<span class="ct-tag">' + esc(c.status_cn || c.phase_cn || '') + '</span></div>'
+         + '<span class="ct-tag ' + phaseCls(c.phase) + '">' + esc(c.phase_cn || c.status_cn || '') + '</span></div>'
          + '<div class="ct-desc">' + esc((c.description || '').slice(0, 60)) + '</div>'
+         + stageBar(c)
          + '<div class="ct-time">报名：' + esc(c.reg_start || '-') + ' ~ ' + esc(c.reg_end || '-') + '</div>'
          + '<div class="ct-time">比赛：' + esc(c.start_at || '-') + ' ~ ' + esc(c.end_at || '-') + '</div>'
+         + (c.mine_brief ? '<div class="ct-time" style="color:#07C160">已投稿：' + esc(c.mine_brief.title) + '</div>' : '')
          + '<div class="ct-btns"><span class="ct-btn">' + esc(c.action_label || '查看') + '</span></div>'
          + '</div>';
     });
@@ -662,13 +863,25 @@ function openContest(cid) {
     API.get('/api/contests/' + cid, null, true).then(function (r) {
       var c = r.contest, h =
         '<div class="ct-card"><div class="ct-top"><span class="ct-name">' + esc(c.title) + '</span>'
-        + '<span class="ct-tag">' + esc(c.status_cn || c.phase_cn || '') + '</span></div>'
+        + '<span class="ct-tag ' + phaseCls(c.phase) + '">' + esc(c.phase_cn || c.status_cn || '') + '</span></div>'
         + '<div class="ct-desc">' + esc(c.description || '') + '</div>'
+        + stageBar(c)
         + '<div class="ct-time">报名：' + esc(c.reg_start || '-') + ' ~ ' + esc(c.reg_end || '-') + '</div>'
         + '<div class="ct-time">比赛：' + esc(c.start_at || '-') + ' ~ ' + esc(c.end_at || '-') + '</div>'
-        + '<div class="ct-time">赛程：' + esc((c.stages || []).join(' → ')) + '</div>';
-      if (c.prize_pool) h += '<div class="ct-time">赏金池：' + c.prize_pool + '</div>';
-      h += '<div class="ct-btns"><button class="ct-btn" id="ct-act">' + esc(c.action_label || '查看') + '</button></div></div>';
+        + '<div class="ct-time">当前阶段：<b style="color:#07C160">' + esc(c.cur_stage || (c.stages || [])[0] || '未设置') + '</b>'
+        + (c.stage_total > 1 ? '（第 ' + Math.max(c.stage_index + 1, 1) + '/' + c.stage_total + ' 阶段）' : '') + '</div>';
+      if (c.prize_pool) h += '<div class="ct-time">赏金池：<b style="color:#fa9d3b">' + c.prize_pool + '</b></div>';
+      if (c.need_register) {
+        h += '<div class="ct-time">报名状态：' + (c.registered
+             ? '<b style="color:#07C160">已报名</b>' : '<b style="color:#fa5151">未报名</b>') + '</div>';
+      }
+      h += '<div class="ct-btns">';
+      if (c.can_register && !c.registered) {
+        h += '<button class="ct-btn ct-btn-main" id="ct-reg">' + esc(c.action_label || '报名')
+           + (c.reg_kind === 'late' && c.late_cost ? '（补报 ' + c.late_cost + ' 积分）' : '') + '</button>';
+      }
+      h += '<button class="ct-btn" id="ct-act">' + esc(c.mine ? '修改作品' : (c.can_submit ? '参赛投稿' : '投稿')) + '</button>'
+         + '</div></div>';
       if (c.mine) {
         h += '<div class="sec-title">我的作品</div><div class="ct-card">'
            + '<div class="ct-top"><span class="ct-name">' + esc(c.mine.title) + '</span></div>'
@@ -687,12 +900,31 @@ function openContest(cid) {
         });
       }
       $('sub-body').innerHTML = h;
+      var rg = $('ct-reg');
+      if (rg) rg.onclick = function () {
+        API.req('/api/contests/' + cid + '/register', { data: {}, loadingText: '报名中…' })
+          .then(function (r) { toast(r.msg || '报名成功'); reloadSub(); })
+          .catch(function (e) { toast(e.msg || '报名失败'); });
+      };
       $('ct-act').onclick = function () {
-        if (!c.can_submit) { toast('当前不在投稿时间'); return; }
-        promptSheet(c.mine ? '修改作品' : '投稿', [{ key: 'title', ph: '作品标题', val: c.mine ? c.mine.title : '' },
-          { key: 'content', ph: '正文', val: c.mine ? c.mine.content : '' }], function (d) {
+        if (!c.can_submit) {
+          var why = c.submit_reason;
+          if (!why) {
+            if (!c.registered && c.need_register) why = '请先在上方点击"' + (c.action_label || '报名') + '"';
+            else if (c.phase === 'before_reg') why = '报名尚未开始（' + (c.reg_start || '') + ' 开始）';
+            else if (c.phase === 'registering' || c.phase === 'before_start') why = '比赛尚未开始，投稿通道将于 ' + (c.start_at || '') + ' 开放';
+            else if (c.phase === 'ended') why = '本场比赛已结束';
+            else why = '当前不在投稿时间';
+          }
+          toast(why); return;
+        }
+        promptSheet(c.mine ? '修改作品' : '参赛投稿', [
+          { key: 'title', ph: '作品标题', val: c.mine ? c.mine.title : '', required: true },
+          { key: 'content', ph: '正文', val: c.mine ? c.mine.content : '', type: 'textarea', rows: 8, required: true }
+        ], function (d) {
           API.req('/api/contests/' + cid + '/submit', { data: d, loadingText: '提交中…' })
-            .then(function () { toast('已提交'); openContest(cid); }).catch(function (e) { toast(e.msg); });
+            .then(function () { toast('已提交'); reloadSub(); })
+            .catch(function (e) { toast(e.msg || '提交失败'); });
         });
       };
       var ed = $('ct-edit'); if (ed) ed.onclick = function () { $('ct-act').click(); };
@@ -723,11 +955,12 @@ function loadMe() {
     + '</div>';
   API.get('/api/me', null, true).then(function (r) {
     var st = r.stats || {};
+    function num() { for (var i = 0; i < arguments.length; i++) { if (arguments[i] != null) return arguments[i]; } return 0; }
     $('me-stats').innerHTML =
-      '<div class="me-stat"><b>' + (st.articles || 0) + '</b><span>文章</span></div>'
-      + '<div class="me-stat"><b>' + (st.moments || 0) + '</b><span>动态</span></div>'
-      + '<div class="me-stat"><b>' + (st.points || 0) + '</b><span>积分</span></div>'
-      + '<div class="me-stat"><b>' + (st.likes || 0) + '</b><span>获赞</span></div>';
+      '<div class="me-stat"><b>' + num(st.articles, st.article) + '</b><span>文章</span></div>'
+      + '<div class="me-stat"><b>' + num(st.moments, st.moment) + '</b><span>动态</span></div>'
+      + '<div class="me-stat"><b>' + num(st.points) + '</b><span>积分</span></div>'
+      + '<div class="me-stat"><b>' + num(st.likes, st.like) + '</b><span>获赞</span></div>';
   }).catch(function () {});
 }
 document.addEventListener('click', function (e) {
@@ -735,14 +968,16 @@ document.addEventListener('click', function (e) {
   if (!c) return;
   var k = c.getAttribute('data-me');
   if (k === 'logout') {
-    API.clearSession(); go('login');
+    API.clearSession(); stack = []; curTab = 'chats'; go('login');
   } else if (k === 'srv') {
     promptSheet('服务器地址', [{ key: 'base', ph: 'http://...', val: S.base }], function (d) {
       S.base = (d.base || '').trim().replace(/\/+$/, '') || S.base; API.save(); toast('已保存');
     });
   } else if (k === 'profile') {
     promptSheet('编辑资料', [{ key: 'display_name', ph: '昵称', val: (S.me || {}).name || '' },
-      { key: 'bio', ph: '个性签名', val: (S.me || {}).bio || '' }], function (d) {
+      { key: 'bio', ph: '个性签名', val: (S.me || {}).bio || '', type: 'textarea', rows: 3 },
+      { key: 'gender', ph: '性别', val: (S.me || {}).gender || '' },
+      { key: 'location', ph: '地区', val: (S.me || {}).location || '' }], function (d) {
       API.req('/api/profile', { data: d, loadingText: '保存中…' })
         .then(function (r) { S.me = r.user; API.save(); loadMe(); toast('已保存'); })
         .catch(function (e) { toast(e.msg); });
@@ -758,23 +993,27 @@ document.addEventListener('click', function (e) {
              + (l.delta >= 0 ? '+' : '') + l.delta + '</span></div>';
         });
         $('sub-body').innerHTML = h + '</div>';
+      }).catch(function (e) {
+        $('sub-body').innerHTML = '<div class="empty"><div class="empty-ico">⚠️</div>'
+          + '<div class="empty-t">加载失败</div>'
+          + '<div class="empty-d">' + esc((e && e.msg) || '请检查服务器') + '</div>'
+          + '<button class="btn-retry" onclick="location.reload()">重试</button></div>';
       });
     });
   } else if (k === 'mypost') {
     push('mypost', '我的投稿', function () {
       API.get('/api/contests').then(function (r) {
         var h = '', any = false;
-        (r.items || []).forEach(function (c) {
-          if (c.mine) { any = true; }
-        });
-        if (!any) { $('sub-body').innerHTML = '<div class="empty">暂无投稿</div>'; return; }
+        var mine = (r.items || []).filter(function (c) { return c.mine_brief; });
+        if (!mine.length) { $('sub-body').innerHTML = '<div class="empty">暂无投稿</div>'; return; }
         h = '';
-        (r.items || []).forEach(function (c) {
-          if (!c.mine) return;
+        mine.forEach(function (c) {
           h += '<div class="list-item" data-cid="' + c.id + '"><div class="list-title">' + esc(c.title) + '</div>'
-             + '<div class="list-sub">' + esc(c.mine.title) + '</div></div>';
+             + '<div class="list-sub">我的作品：' + esc(c.mine_brief.title) + ' · ' + esc(c.phase_cn || '') + '</div></div>';
         });
         $('sub-body').innerHTML = h;
+      }).catch(function (e) {
+        $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
       });
     });
   }
@@ -782,12 +1021,7 @@ document.addEventListener('click', function (e) {
 $('me-set').onclick = function () { toast('在下方设置'); };
 
 /* ---------- 返回 ---------- */
-$('sub-back').onclick = function () {
-  stack.pop();
-  var tab = document.querySelector('.tb.on');
-  var t = tab ? tab.getAttribute('data-tab') : 'chats';
-  go(t, { load: t === 'chats' ? loadChats : t === 'me' ? loadMe : t === 'discover' ? loadDiscover : t === 'contest' ? loadContests : null });
-};
+$('sub-back').onclick = function () { back(); };
 
 /* ---------- 启动屏控制（本地动画，最迟 1.6s 收起） ---------- */
 var splashDone = false;
@@ -803,7 +1037,8 @@ setTimeout(hideSplash, 1600);
   /* 关键：先立刻把页面画出来（本地已登录则进消息页，否则登录页），
      绝不等网络请求，避免出现白屏。之后再异步探测服务器。 */
   try {
-    if (S.token && S.me) go('chats', { load: loadChats });
+    if (S.token && S.me) { setTab('chats'); go('chats', { load: loadChats }); tryAutoLogin(); }
+    else if (tryAutoLogin()) { setTab('chats'); go('chats', { load: loadChats }); }
     else go('login');
   } catch (e) { go('login'); }
   hideSplash();
