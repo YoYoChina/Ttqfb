@@ -156,6 +156,10 @@ function promptSheet(title, fields, onOk) {
     if (f.type === 'textarea') {
       h += '<textarea class="inp inp-area" id="pf-' + f.key + '" placeholder="' + esc(f.ph || '') + '"'
          + (f.rows ? ' rows="' + f.rows + '"' : ' rows="5"') + '>' + esc(f.val || '') + '</textarea>';
+    } else if (f.type === 'file') {
+      h += '<div class="pf-file"><span class="pf-file-lb">' + esc(f.ph || '选择文件') + '</span>'
+         + '<input class="inp inp-file" id="pf-' + f.key + '" type="file"'
+         + (f.accept ? ' accept="' + f.accept + '"' : ' accept="image/*"') + '></div>';
     } else if (f.type === 'select') {
       h += '<select class="inp" id="pf-' + f.key + '">';
       (f.options || []).forEach(function (o) {
@@ -177,8 +181,14 @@ function promptSheet(title, fields, onOk) {
     var d = {};
     var bad = null;
     fields.forEach(function (f) {
-      d[f.key] = $('pf-' + f.key).value;
-      if (f.required && !String(d[f.key] || '').trim() && !bad) bad = f;
+      var el = $('pf-' + f.key);
+      if (f.type === 'file') {
+        d[f.key] = (el && el.files && el.files[0]) ? el.files[0] : '';
+        if (f.required && !d[f.key] && !bad) bad = f;
+      } else {
+        d[f.key] = el ? el.value : '';
+        if (f.required && !String(d[f.key] || '').trim() && !bad) bad = f;
+      }
     });
     if (bad) { toast('请填写' + (bad.ph || bad.key)); return; }
     closeSheet();
@@ -286,48 +296,67 @@ function loadChats() {
 }
 $('chats-new').onclick = function () {
   sheet([
-    { text: '发起私聊', fn: function () { pickUser('single'); } },
+    { text: '按用户名找人聊', fn: function () { chatByUsername(); } },
+    { text: '从通讯录选人聊', fn: function () { pickUser('single'); } },
     { text: '创建群聊', fn: function () { pickUser('multi'); } }
   ]);
 };
+
+/* ---------- 按用户名发起私聊：与网站同一账号、同一份聊天记录 ---------- */
+function chatByUsername() {
+  promptSheet('按用户名发起私聊', [
+    { key: 'username', ph: '输入对方用户名，如 admin', required: true }
+  ], function (d) {
+    var uname = (d.username || '').trim();
+    if (!uname) return;
+    API.req('/api/chat/with/' + encodeURIComponent(uname), { method: 'POST', loadingText: '查找中…' })
+      .then(function (r) {
+        toast(r.msg || ('已找到 ' + uname));
+        openChat(r.room_id);
+      })
+      .catch(function (e) { toast(e.msg || '找不到这个用户'); });
+  });
+}
+
 var selIds = [];
 var pickMode = 'single';
 function pickUser(mode) {
   selIds = []; pickMode = mode || 'single';
   var multi = pickMode === 'multi';
-  $('sub-title').textContent = multi ? '选择群成员' : '选择联系人';
-  $('sub-body').innerHTML = '<div class="skel"><div class="skel-row w80"></div><div class="skel-row w60"></div></div>';
-  go('sub');
-  API.get('/api/users').then(function (r) {
-    var h = '';
-    (r.items || []).forEach(function (u) {
-      if (S.me && u.id === S.me.id) return;
-      h += '<div class="cell" data-uid="' + u.id + '">' + AV(u.avatar, '')
-         + '<span class="cell-txt">' + esc(u.name || u.username) + '</span>'
-         + '<span class="cell-arrow pick-tick">✓</span></div>';
-    });
-    if (!h) h = '<div class="empty">还没有其他用户</div>';
-    $('sub-body').innerHTML = h;
-    var top = stack[stack.length - 1];
-    if (top) {
-      top.act = multi ? '确定(0)' : '';
-      top.actFn = function () { doCreateRoom(); };
-      renderSub();
-    }
-    $('sub-body').onclick = function (e) {
-      var c = e.target.closest('.cell'); if (!c) return;
-      var uid = +c.getAttribute('data-uid');
-      var i = selIds.indexOf(uid);
-      if (i >= 0) { selIds.splice(i, 1); c.classList.remove('picked'); }
-      else { selIds.push(uid); c.classList.add('picked'); }
-      if (multi) {
-        if (top) { top.act = '确定(' + selIds.length + ')'; renderSub(); }
-      } else if (selIds.length) {
-        doCreateRoom();
+  /* 关键：用 push 进栈，返回时才有上一层可回 */
+  push('pick', multi ? '选择群成员' : '选择联系人', function () {
+    API.get('/api/users').then(function (r) {
+      var h = '';
+      (r.items || []).forEach(function (u) {
+        if (S.me && u.id === S.me.id) return;
+        h += '<div class="cell" data-uid="' + u.id + '">' + AV(u.avatar, '')
+           + '<span class="cell-txt">' + esc(u.name || u.username)
+           + ' <span style="color:#b2b2b2;font-size:12px">ID:' + esc(u.username) + '</span></span>'
+           + '<span class="cell-arrow pick-tick">✓</span></div>';
+      });
+      if (!h) h = '<div class="empty">还没有其他用户</div>';
+      $('sub-body').innerHTML = h;
+      var top = stack[stack.length - 1];
+      if (top) {
+        top.act = multi ? '确定(0)' : '';
+        top.actFn = function () { doCreateRoom(); };
+        renderSub();
       }
-    };
-  }).catch(function (e) {
-    $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
+      $('sub-body').onclick = function (e) {
+        var c = e.target.closest('.cell'); if (!c) return;
+        var uid = +c.getAttribute('data-uid');
+        var i = selIds.indexOf(uid);
+        if (i >= 0) { selIds.splice(i, 1); c.classList.remove('picked'); }
+        else { selIds.push(uid); c.classList.add('picked'); }
+        if (multi) {
+          if (top) { top.act = '确定(' + selIds.length + ')'; renderSub(); }
+        } else if (selIds.length) {
+          doCreateRoom();
+        }
+      };
+    }).catch(function (e) {
+      $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
+    });
   });
 }
 function doCreateRoom() {
@@ -341,10 +370,10 @@ function doCreateRoom() {
   }
   API.req('/api/chat/create', { data: payload, loadingText: '创建中…' })
     .then(function (r) {
-      stack = [];
+      /* 只弹掉"选人"这一层，不再清空整个栈，返回键行为才正常 */
+      if (stack.length && stack[stack.length - 1].name === 'pick') stack.pop();
       var rid = r.room_id || r.id;
       toast(multi ? '群聊已创建' : (r.existed ? '已进入会话' : '会话已创建'));
-      goTab('chats');
       openChat(rid);
     })
     .catch(function (e) { toast(e.msg || '创建失败'); });
@@ -583,6 +612,7 @@ document.addEventListener('click', function (e) {
 
 /* ---------- 文库 ---------- */
 function openArticles() {
+  /* act/actFn 交给 push，按钮才会真正显示（之前被 visibility:hidden 挡住） */
   push('articles', '文库', function () {
     API.get('/api/articles', { offset: 0 }, true).then(function (r) {
       var h = '';
@@ -592,11 +622,13 @@ function openArticles() {
            + '<div class="list-sub">' + esc(a.category) + ' · ' + esc(a.author ? a.author.name : '')
            + ' · ' + a.views + ' 阅读</div></div>';
       });
-      $('sub-body').innerHTML = h || '<div class="empty">暂无文章</div>';
-      $('sub-act').textContent = '写文章';
-      $('sub-act').onclick = writeArticle;
+      $('sub-body').innerHTML = h || '<div class="empty">暂无文章，点右上角"写文章"发布</div>';
+      var top = stack[stack.length - 1];
+      if (top && !top.act) { top.act = '写文章'; top.actFn = writeArticle; renderSub(); }
+    }).catch(function (e) {
+      $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
     });
-  });
+  }, { act: '写文章', actFn: function () { writeArticle(); } });
 }
 document.addEventListener('click', function (e) {
   var it = e.target.closest ? e.target.closest('[data-aid]') : null;
@@ -622,10 +654,40 @@ function dl(name, text) {
   setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
 }
 function writeArticle() {
-  promptSheet('写文章', [{ key: 'title', ph: '标题' }, { key: 'content', ph: '正文' }], function (d) {
-    if (!d.title.trim() || !d.content.trim()) { toast('标题和正文不能为空'); return; }
-    API.req('/api/articles', { data: d, loadingText: '发布中…' })
-      .then(function () { toast('已发布'); openArticles(); }).catch(function (e) { toast(e.msg); });
+  API.get('/api/categories', null, true).then(function (cr) {
+    var opts = (cr.items || []).map(function (c) { return { value: c.id, text: c.name }; });
+    if (!opts.length) opts = [{ value: '', text: '未分类' }];
+    promptSheet('写文章', [
+      { key: 'title', ph: '标题', required: true },
+      { key: 'category_id', ph: '分类', type: 'select', options: opts,
+        val: opts[0].value },
+      { key: 'summary', ph: '摘要（可选）', type: 'textarea', rows: 2 },
+      { key: 'content', ph: '正文', type: 'textarea', rows: 8, required: true },
+      { key: 'cover', ph: '封面图（可选）', type: 'file' }
+    ], function (d) {
+      if (!String(d.title || '').trim() || !String(d.content || '').trim()) {
+        toast('标题和正文不能为空'); return;
+      }
+      var f = document.getElementById('pf-cover');
+      var file = (f && f.files && f.files[0]) ? f.files[0] : null;
+      function post(coverName) {
+        var payload = { title: d.title, content: d.content,
+                        summary: d.summary || '', category_id: d.category_id || '' };
+        if (coverName) payload.cover = coverName;
+        API.req('/api/articles', { data: payload, loadingText: '发布中…' })
+          .then(function () { toast('已发布'); reloadSub(); })
+          .catch(function (e) { toast(e.msg || '发布失败'); });
+      }
+      if (file) {
+        API.upload(file, {}, 'cover', '封面上传中…')
+          .then(function (r) { post(r.filename || ''); })
+          .catch(function (e) { toast(e.msg || '封面上传失败'); });
+      } else {
+        post('');
+      }
+    });
+  }).catch(function () {
+    toast('分类加载失败');
   });
 }
 
@@ -741,6 +803,27 @@ document.addEventListener('click', function (e) {
 });
 
 /* ---------- 论坛 ---------- */
+function writeThread() {
+  API.get('/api/boards', null, true).then(function (br) {
+    var boards = br.items || [];
+    if (!boards.length) { toast('还没有板块，请先在网站创建'); return; }
+    if (boards.length === 1) { threadForm(boards[0]); return; }
+    sheet(boards.map(function (b) {
+      return { text: b.name, fn: function () { threadForm(b); } };
+    }));
+  }).catch(function () { toast('板块加载失败'); });
+}
+function threadForm(b) {
+  promptSheet('发帖 · ' + b.name, [
+    { key: 'title', ph: '标题', required: true },
+    { key: 'content', ph: '正文', type: 'textarea', rows: 8, required: true }
+  ], function (d) {
+    d.board_id = b.id;
+    API.req('/api/threads', { data: d, loadingText: '发布中…' })
+      .then(function () { toast('已发布'); reloadSub(); })
+      .catch(function (e) { toast(e.msg || '发布失败'); });
+  });
+}
 function openForum() {
   push('forum', '论坛', function () {
     API.get('/api/threads', { offset: 0 }, true).then(function (r) {
@@ -751,23 +834,13 @@ function openForum() {
            + '<div class="list-sub">' + esc(t.board) + ' · ' + esc(t.author ? t.author.name : '')
            + ' · ' + t.reply_count + ' 回复</div></div>';
       });
-      $('sub-body').innerHTML = h || '<div class="empty">暂无帖子</div>';
-      $('sub-act').textContent = '发帖';
-      $('sub-act').onclick = function () {
-        API.get('/api/boards', null, true).then(function (br) {
-          sheet((br.items || []).map(function (b) {
-            return { text: b.name, fn: function () {
-              promptSheet('发帖 · ' + b.name, [{ key: 'title', ph: '标题' }, { key: 'content', ph: '正文' }], function (d) {
-                d.board_id = b.id;
-                API.req('/api/threads', { data: d, loadingText: '发布中…' })
-                  .then(function () { toast('已发布'); openForum(); }).catch(function (e) { toast(e.msg); });
-              });
-            } };
-          }));
-        });
-      };
+      $('sub-body').innerHTML = h || '<div class="empty">暂无帖子，点右上角"发帖"发一条</div>';
+      var top = stack[stack.length - 1];
+      if (top && !top.act) { top.act = '发帖'; top.actFn = writeThread; renderSub(); }
+    }).catch(function (e) {
+      $('sub-body').innerHTML = '<div class="empty">' + esc((e && e.msg) || '加载失败') + '</div>';
     });
-  });
+  }, { act: '发帖', actFn: function () { writeThread(); } });
 }
 document.addEventListener('click', function (e) {
   var it = e.target.closest ? e.target.closest('[data-tid]') : null;
@@ -920,11 +993,24 @@ function openContest(cid) {
         }
         promptSheet(c.mine ? '修改作品' : '参赛投稿', [
           { key: 'title', ph: '作品标题', val: c.mine ? c.mine.title : '', required: true },
-          { key: 'content', ph: '正文', val: c.mine ? c.mine.content : '', type: 'textarea', rows: 8, required: true }
+          { key: 'content', ph: '正文', val: c.mine ? c.mine.content : '', type: 'textarea', rows: 8, required: true },
+          { key: 'attachment', ph: '附件（图片/文档，可选）', type: 'file',
+            accept: 'image/*,.txt,.pdf,.doc,.docx,.zip' }
         ], function (d) {
-          API.req('/api/contests/' + cid + '/submit', { data: d, loadingText: '提交中…' })
-            .then(function () { toast('已提交'); reloadSub(); })
-            .catch(function (e) { toast(e.msg || '提交失败'); });
+          function post(attName) {
+            var payload = { title: d.title, content: d.content };
+            if (attName) payload.attachment = attName;
+            API.req('/api/contests/' + cid + '/submit', { data: payload, loadingText: '提交中…' })
+              .then(function () { toast('已提交'); reloadSub(); })
+              .catch(function (e) { toast(e.msg || '提交失败'); });
+          }
+          if (d.attachment && d.attachment.size) {
+            API.upload(d.attachment, {}, 'file', '附件上传中…')
+              .then(function (r) { post(r.filename || ''); })
+              .catch(function (e) { toast(e.msg || '附件上传失败'); });
+          } else {
+            post('');
+          }
         });
       };
       var ed = $('ct-edit'); if (ed) ed.onclick = function () { $('ct-act').click(); };
@@ -984,21 +1070,10 @@ document.addEventListener('click', function (e) {
     });
   } else if (k === 'points') {
     push('points', '我的积分', function () {
-      API.get('/api/points', null, true).then(function (r) {
-        var h = '<div class="ct-card"><div class="ct-name">当前积分：' + r.balance + '</div>';
-        (r.logs || []).forEach(function (l) {
-          h += '<div class="rank-row"><div class="rank-mid"><div class="rank-title">' + esc(l.reason) + '</div>'
-             + '<div class="rank-sub">' + esc(l.created_at) + '</div></div>'
-             + '<span class="rank-score" style="color:' + (l.delta >= 0 ? '#0ac06e' : '#fa5151') + '">'
-             + (l.delta >= 0 ? '+' : '') + l.delta + '</span></div>';
-        });
-        $('sub-body').innerHTML = h + '</div>';
-      }).catch(function (e) {
-        $('sub-body').innerHTML = '<div class="empty"><div class="empty-ico">⚠️</div>'
-          + '<div class="empty-t">加载失败</div>'
-          + '<div class="empty-d">' + esc((e && e.msg) || '请检查服务器') + '</div>'
-          + '<button class="btn-retry" onclick="location.reload()">重试</button></div>';
-      });
+      $('sub-body').innerHTML =
+        '<div class="empty"><div class="empty-ico">🛠</div>'
+        + '<div class="empty-t">积分中心暂未开放</div>'
+        + '<div class="empty-d">积分明细、兑换与排行榜正在开发中<br>比赛赏金与投票功能不受影响</div></div>';
     });
   } else if (k === 'mypost') {
     push('mypost', '我的投稿', function () {

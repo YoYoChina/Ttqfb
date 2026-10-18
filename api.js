@@ -99,9 +99,10 @@
     if (!silent) showLoading(opt.loadingText || '加载中');
 
     return new Promise(function (resolve, reject) {
+      function attempt(n) {
       var xhr = new XMLHttpRequest();
       xhr.open(method, url, true);
-      xhr.timeout = opt.timeout || 8000;
+      xhr.timeout = opt.timeout || 15000;
 
       if (S.token) xhr.setRequestHeader('Authorization', 'Bearer ' + S.token);
 
@@ -148,14 +149,18 @@
         resolve(j || {});
       };
       xhr.onerror = function () {
+        if (n < 1 && method === 'GET') { setTimeout(function () { attempt(n + 1); }, 800); return; }
         if (!silent) hideLoading(); hideProgress();
-        reject({ msg: '网络连接失败，请检查服务器地址' });
+        reject({ msg: '网络连接失败，请检查服务器地址或网络' });
       };
       xhr.ontimeout = function () {
+        if (n < 1 && method === 'GET') { setTimeout(function () { attempt(n + 1); }, 800); return; }
         if (!silent) hideLoading(); hideProgress();
-        reject({ msg: '请求超时' });
+        reject({ msg: '请求超时，服务器响应较慢' });
       };
       xhr.send(body);
+      }
+      attempt(0);
     });
   }
 

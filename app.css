@@ -447,3 +447,67 @@ select.inp{appearance:none;-webkit-appearance:none;background-image:none}
 
 /* 聊天气泡 */
 .bubble{border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+
+/* ============================================================
+   发现页 · 四宫格大按钮（2 行 × 2 列）
+   ============================================================ */
+.dc-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  padding:14px 14px 4px;
+}
+.dc-card{
+  position:relative;background:var(--card);border-radius:16px;
+  padding:18px 14px 16px;min-height:104px;
+  display:flex;flex-direction:column;justify-content:center;
+  box-shadow:0 2px 10px rgba(0,0,0,.05);
+  transition:transform .12s ease, box-shadow .12s ease;
+  overflow:hidden;
+}
+.dc-card::after{
+  content:'';position:absolute;right:-18px;bottom:-18px;
+  width:76px;height:76px;border-radius:50%;
+  background:currentColor;opacity:.07;
+}
+.dc-card:active{transform:scale(.965);box-shadow:0 1px 5px rgba(0,0,0,.08)}
+.dc-ico{font-size:26px;line-height:1;margin-bottom:9px;display:block}
+.dc-name{font-size:16px;font-weight:600;color:var(--t1);letter-spacing:.5px}
+.dc-desc{font-size:12px;color:var(--t3);margin-top:3px}
+.dc-ico-moment{color:#07C160}
+.dc-ico-book{color:#F5A623}
+.dc-ico-novel{color:#7A6FF0}
+.dc-ico-forum{color:#2E9BEF}
+.dc-card[data-go="moments"]{color:#07C160}
+.dc-card[data-go="articles"]{color:#F5A623}
+.dc-card[data-go="novels"]{color:#7A6FF0}
+.dc-card[data-go="forum"]{color:#2E9BEF}
+
+/* ============================================================
+   表单 · 文件选择
+   ============================================================ */
+.pf-file{
+  border:1px dashed #d6d6d6;border-radius:10px;padding:10px 12px;margin-bottom:10px;
+  background:#fafafa;
+}
+.pf-file-lb{display:block;font-size:13px;color:var(--t2);margin-bottom:6px}
+.inp-file{border:none;background:transparent;padding:0;font-size:13px;color:var(--t2)}
+
+/* ============================================================
+   细节打磨
+   ============================================================ */
+/* 顶栏毛玻璃 */
+.navbar{background:rgba(255,255,255,.92);backdrop-filter:saturate(180%) blur(12px);
+  -webkit-backdrop-filter:saturate(180%) blur(12px)}
+/* 列表卡片圆角与阴影统一 */
+.list-item,.ct-card{box-shadow:0 1px 6px rgba(0,0,0,.045)}
+.rank-row{border-radius:10px}
+/* 空状态更柔和 */
+.empty{padding:44px 24px;color:var(--t3);font-size:14px;text-align:center}
+.empty-t{font-size:15px;color:var(--t2);font-weight:600;margin-bottom:6px}
+.empty-d{font-size:13px;color:var(--t3);line-height:1.65}
+/* 重试按钮 */
+.btn-retry{margin-top:14px;border:none;background:var(--green);color:#fff;
+  height:36px;padding:0 22px;border-radius:18px;font-size:14px}
+.btn-retry:active{background:var(--green-d);transform:scale(.97)}
+/* 主按钮：圆角更现代 */
+.btn-main{border-radius:22px;height:46px;font-size:16px;font-weight:600;
+  box-shadow:0 4px 14px rgba(7,193,96,.25)}
