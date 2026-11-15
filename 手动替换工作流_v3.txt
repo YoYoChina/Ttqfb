@@ -1,0 +1,155 @@
+【v3 落地：手机上要手动贴 2 个文件】
+
+为什么：机器人用内置令牌提交时，GitHub 不允许碰 .github/workflows/ 目录，
+所以 zip 里的工作流文件不会进仓库，必须你手动贴一次（只此一次）。
+
+────────────────────────────────────────
+顺序（照做即可）
+────────────────────────────────────────
+1. 把 星湾APP_前端_v3.zip 传到仓库根目录
+   → 现有「解压前端包」工作流会自动跑，frontend/ 更新、Pages 重发
+   → 如果旧的「打包 APK」任务报红 / 卡 npm ci，不用管，它已经作废
+
+2. 网页 → Add file → Create new file
+   文件名填： .github/workflows/unzip.yml
+   把下面【文件一】整段粘进去 → Commit changes
+
+3. 再新建（或编辑） .github/workflows/android.yml
+   把下面【文件二】整段粘进去 → Commit changes
+
+4. Actions → 选「打包 Android APK（权限修复版 v3）」→ Run workflow
+   → 跑完在 Artifacts 下载 starven-hide-and-seek-v3
+
+5. 服务器 /tmp 传 星湾APP_后端升级.sh，执行：
+   sudo bash /tmp/星湾APP_后端升级.sh
+   → 看到 edition: v3-qr-fixed 就对了
+
+6. 手机若装过旧版：先卸载旧 APK / 清一次浏览器缓存（SW 已 bump 到 v3）
+
+────────────────────────────────────────
+【文件一】.github/workflows/unzip.yml
+────────────────────────────────────────
+name: 解压前端包 · 发布 PWA（v3）
+
+# v3：去掉旧的 Capacitor 打包任务（npm ci 容易卡、且不含权限声明），
+# APK 统一交给 android.yml 手动 Run。
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: starven-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 解压 zip 并合并到仓库根目录
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=( *.zip )
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "没有待解压的 zip，跳过解压"
+            exit 0
+          fi
+          for z in "${zips[@]}"; do
+            echo "解压 $z"
+            unzip -oq "$z" -d .
+            rm -f "$z"
+          done
+          for d in */; do
+            if [ -d "$d/frontend" ] || [ -d "$d/.github" ]; then
+              cp -a "$d." .
+              rm -rf "$d"
+            fi
+          done
+          test -f frontend/index.html || { echo "✗ 没找到 frontend/index.html"; exit 1; }
+          find frontend -type f -exec chmod 644 {} +
+          echo "✓ 解压完成，frontend/ 已就绪"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starven-site
+          path: frontend/
+          if-no-files-found: error
+      - name: 提交（排除 .github，绕开 workflows 权限限制）
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git reset -q -- .github/
+          git diff --staged --quiet && exit 0
+          git commit -m "v3 前端：二维码/倒计时/积分/小球/权限更新"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+
+  pages:
+    needs: extract
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: starven-site
+          path: site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: 发布 Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+────────────────────────────────────────
+【文件二】.github/workflows/android.yml
+────────────────────────────────────────
+name: 打包 Android APK（权限修复版 v3）
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 安装 SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+      - name: 安装 Gradle 8.4
+        run: |
+          curl -fL --retry 2 -o "$RUNNER_TEMP/g.zip" \
+            https://services.gradle.org/distributions/gradle-8.4-bin.zip
+          unzip -q "$RUNNER_TEMP/g.zip" -d "$RUNNER_TEMP/g"
+          echo "$RUNNER_TEMP/g/gradle-8.4/bin" >> "$GITHUB_PATH"
+      - name: 生成工程（权限声明 + 首次申请 + WebView 放行）
+        run: bash make-android.sh
+      - name: 编译 APK
+        run: cd android && gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starven-hide-and-seek-v3
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+────────────────────────────────────────

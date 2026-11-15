@@ -1,5 +1,5 @@
 /* 星湾躲猫猫 PWA：安装后可离线打开界面，接口请求始终走网络 */
-const CACHE = "starven-hns-v2";
+const CACHE = "starven-hns-v3";
 const SHELL = [
   "./", "./index.html", "./css/app.css",
   "./js/app.js", "./js/api.js", "./js/ws.js", "./js/geo.js", "./js/scan.js",
@@ -9,7 +9,7 @@ const SHELL = [
   "./vendor/leaflet/images/layers.png",
   "./assets/hero-login.webp", "./assets/hero-home.webp",
   "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-64.png",
-  "./icons/favicon.png", "./manifest.webmanifest"
+  "./icons/favicon.png", "./manifest.webmanifest", "./js/perm.js"
 ];
 
 self.addEventListener("install", (e) => {

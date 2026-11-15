@@ -7,7 +7,8 @@ import * as GEO from "./geo.js";
 import { createScanner } from "./scan.js";
 import { drawRadar } from "./radar.js";
 import * as MAP from "./mapview.js";
-import { fmtCoord, fmtAccuracy } from "./coords.js";
+import { fmtCoord, fmtAccuracy, normalizeInput } from "./coords.js";
+import * as PERM from "./perm.js";
 
 const $ = (s) => document.querySelector(s);
 const view = $("#view"), tabsEl = $("#tabs"), toastEl = $("#toast");
@@ -22,6 +23,8 @@ const S = {
   radar: null, adminData: { players: [], balls: [], invites: [], games: [] },
   installEvt: null, lastReport: 0, wsGameId: null, wsConnected: false,
   trackCount: 0, mapStats: null,
+  cdView: localStorage.getItem("starven_cd_view") || "auto",
+  permState: null, _permResolve: null,
 };
 let toastTimer = null, clockTimer = null, cdTimer = null, mapTimer = null, radarTimer = null;
 
@@ -68,6 +71,7 @@ const roleCn = (r) => ({ catcher: "抓捕者", hider: "躲藏者", assistant: "�
 async function boot() {
   S.tilesKey = localStorage.getItem("starven_tiles") || "osm";
   S.tilesTk = localStorage.getItem("starven_tianditu_tk") || "";
+  if (!localStorage.getItem(PERM.PERM_KEY)) await permissionGate();
   if (!getToken()) { renderAuth(); return; }
   try {
     S.user = (await API.me()).user;
@@ -403,27 +407,44 @@ function paintCountdown() {
   });
 }
 
+function cdEffectiveView() {
+  if (S.cdView === "single" || S.cdView === "all") return S.cdView;
+  return S.cd && S.cd.mode === "parallel" ? "all" : "single";
+}
+
+/** 只换 DOM 布局，不重新拉接口、不动 S.cd / S.cdAt —— 倒计时绝不重置 */
+function switchCdView(v) {
+  S.cdView = v;
+  localStorage.setItem("starven_cd_view", v);
+  if (S.tab === "timer") {
+    clearInterval(cdTimer);
+    view.innerHTML = renderTimer();
+    cdTimer = setInterval(() => { if (S.tab === "timer") paintCountdown(); }, 1000);
+    paintCountdown();
+  }
+  toast(v === "all" ? "已切换：三段同屏显示（计时不受影响）" : "已切换：单独显示（计时不受影响）");
+}
+
 function renderTimer() {
   const cd = S.cd;
   const admin = S.user.is_admin;
   if (!cd) return `<div class="card"><div class="empty">${icon("timer")}载入倒计时…</div></div>`;
-  const parallel = cd.mode === "parallel";
-  const active = cd.items.find((x) => x.id === cd.active_id);
+  const viewAll = cdEffectiveView() === "all";
+  const active = cd.items.find((x) => x.id === cd.active_id) ||
+                 cd.items.find((x) => x.status === "running") || cd.items[0];
   return `
     <div class="card tight">
       <div class="card-title"><span>自定义倒计时</span>
-        <span class="sub">${cd.segment_count} 段 · ${parallel ? "同时显示" : "单独显示"}</span></div>
+        <span class="sub">${cd.segment_count} 段 · 管理员统一下发</span></div>
       <div class="segmented">
-        <button class="${parallel ? "" : "on"}" data-act="cd-mode" data-mode="sequential" ${admin ? "" : "disabled"}>${icon("timer", "sm")} 单独显示</button>
-        <button class="${parallel ? "on" : ""}" data-act="cd-mode" data-mode="parallel" ${admin ? "" : "disabled"}>${icon("layers", "sm")} 同时显示</button>
+        <button class="${viewAll ? "" : "on"}" data-act="cd-view" data-view="single">${icon("timer", "sm")} 单独显示</button>
+        <button class="${viewAll ? "on" : ""}" data-act="cd-view" data-view="all">${icon("layers", "sm")} 三个并排</button>
       </div>
-      <div class="small muted">${parallel
-        ? "多段各自独立计时，同屏并列展示；每段归零自动结束。"
-        : "只放大当前段，一段结束后<b>自动启动下一段</b>，其余排队等待。"}</div>
+      <div class="cd-view-note">这只是<b>你自己屏幕上的显示方式</b>，不发送给服务器、不会重置或暂停计时；其他人的屏幕互不影响。</div>
     </div>
 
-    ${parallel ? `
-      <div class="section-label">并行倒计时</div>
+    ${viewAll ? `
+      <div class="section-label">全部倒计时 · ${cd.segment_count} 段</div>
       <div class="cd-grid">
         ${cd.items.map((it) => `<div class="cd-tile ${it.status === "running" ? "running" : ""} ${it.status === "done" ? "done" : ""}" data-cd-id="${it.id}">
           <div class="t-label">${esc(it.label)} · ${it.status === "done" ? "已结束" : it.status === "paused" ? "已暂停" : it.status === "running" ? "进行中" : "待开始"}</div>
@@ -432,7 +453,7 @@ function renderTimer() {
           <div class="tiny muted" style="margin-top:7px">${fmtMin(it.duration)} 分钟 · 第 ${it.seq} 段</div>
         </div>`).join("")}
       </div>` : `
-      <div class="cd-hero" data-cd-id="${active?.id || cd.items[0]?.id || 0}">
+      <div class="cd-hero" data-cd-id="${active?.id || 0}">
         <div class="cd-label">${active ? esc(active.label) : (cd.all_done ? "全部倒计时结束" : "等待开始")}</div>
         <div class="cd-ring">
           <svg viewBox="0 0 120 120">
@@ -455,7 +476,7 @@ function renderTimer() {
       </div>`}
 
     ${admin ? `
-      <div class="section-label">控制</div>
+      <div class="section-label">控制（仅管理员）</div>
       <div class="card">
         <div class="btn-row three">
           <button class="btn sm" data-act="cd-action" data-action="start">${icon("play", "sm")} 开始</button>
@@ -465,7 +486,9 @@ function renderTimer() {
           <button class="btn sm ghost" data-act="cd-action" data-action="reset">${icon("reset", "sm")} 重置</button>
           <button class="btn sm ghost" data-act="cd-edit">${icon("pencil", "sm")} 编辑段</button>
         </div>
-      </div>` : `<div class="notice sage">${icon("info", "sm")} 倒计时由管理员统一控制，所有人的屏幕会实时同步，无需手动刷新。</div>`}
+      </div>
+      <div class="notice sage">${icon("info", "sm")} 段数与时长由你统一设置；「单独 / 三个并排」是每位成员自己的显示偏好，<b>切换不会重置时间</b>。</div>`
+      : `<div class="notice sage">${icon("info", "sm")} 时间和模式由管理员统一下发，全员实时同步。上面两个按钮只改你自己怎么看，不影响倒计时。</div>`}
 
     <div class="notice">${icon("info", "sm")} 段数不限 3 段，可自由添加 / 删除 / 改名 / 改时长。计时以服务器时钟为准，弱网或锁屏后重新打开会自动校准。</div>`;
 }
@@ -805,7 +828,9 @@ function renderMe() {
       <div class="row"><span class="grow small muted">当前比赛</span><b>${S.state?.has_game ? esc(S.state.game.name) : "未加入"}</b></div>
       <div class="row"><span class="grow small muted">地图源</span><b>${esc(tilesName(S.tilesKey))}</b></div>
       <div class="row"><span class="grow small muted">定位状态</span><b>${S.geoError ? "异常" : GEO.isSecure ? "实时上报中" : "HTTP 受限"}</b></div>
+      <div class="row"><span class="grow small muted">相机 / 定位权限</span><b>${S.permState ? (S.permState.camera === "granted" && S.permState.geo === "granted" ? "已开启" : "未完全开启") : "未申请"}</b></div>
       <div class="btn-row" style="margin-top:12px">
+        <button class="btn sm ghost" data-act="perm-reask">${icon("shield", "sm")} 重新申请权限</button>
         <button class="btn sm ghost" data-act="my-qr">${icon("scan", "sm")} 我的身份码</button>
         <button class="btn sm ghost" data-act="open-tiles">${icon("layers", "sm")} 地图源</button>
         ${S.installEvt ? `<button class="btn sm ghost" data-act="install">${icon("download", "sm")} 装到桌面</button>` : ""}
@@ -822,7 +847,7 @@ function renderMe() {
     <div class="card tight">
       <div class="card-title">关于</div>
       <div class="small muted">星湾工作室 · Starven Studio<br>第一期趣味躲猫猫比赛 · 2026.11.21 滨海公园<br>
-        ≥14 人开局，抓捕者1 : 躲藏者10 : 协助者3；躲藏 30 分钟 + 抓捕 30 分钟。</div>
+        开赛人数、角色与倒计时均由管理员在本场自定义；地图 + 雷达双定位，全程记录轨迹。</div>
     </div>
     <button class="btn ghost block" data-act="logout">${icon("logout", "sm")} 退出登录</button>`;
 }
@@ -833,7 +858,7 @@ async function showMyQr() {
     const r = await API.myQr(id);
     showModal(`
       <div class="modal-head"><b>我的身份码</b><button class="modal-close" data-act="modal-close">${icon("close", "sm")}</button></div>
-      <div class="qr-box">${r.svg}<div class="mono small" style="margin-top:9px">${esc(r.code)}</div></div>
+      <div class="qr-box"><img class="qr-img" src="${r.qr}" alt="我的身份码"><div class="mono small" style="margin-top:9px">${esc(r.code)}</div></div>
       <div class="notice sage" style="margin-top:12px">${esc(r.hint)}。</div>
       <button class="btn ghost block" style="margin-top:10px" data-act="copy-code" data-code="${attr(r.code)}">${icon("copy", "sm")} 复制身份码</button>`);
   } catch (e) { toast(e.message); }
@@ -858,6 +883,15 @@ function renderAdmin() {
           <label class="field" style="flex:1"><span>躲藏(分)</span><input name="hide_minutes" type="number" value="30" step="any"></label>
           <label class="field" style="flex:1"><span>抓捕(分)</span><input name="chase_minutes" type="number" value="30" step="any"></label>
         </div>
+        <div class="btn-row">
+          <label class="field" style="flex:1"><span>最少开赛人数（自定义）</span><input name="min_players" type="number" value="2" min="1" max="200" step="1"></label>
+          <label class="field" style="flex:1"><span>你填的经纬度来自</span>
+            <select name="coord_system" id="coord-system">
+              <option value="WGS84">GPS / 天地图 / OSM（WGS-84）</option>
+              <option value="GCJ02">高德 / 腾讯地图（GCJ-02，自动纠偏）</option>
+            </select></label>
+        </div>
+        <div class="tiny muted" style="margin:-6px 0 12px">选了高德/腾讯会自动换算成 GPS 坐标入库，场地圆圈才不会和轨迹错开几百米。</div>
         <button class="btn block" type="submit">${icon("plus", "sm")} 创建比赛</button>
       </form>
     </div>` : `
@@ -881,7 +915,31 @@ function renderAdmin() {
         <div class="chip" data-act="tab" data-tab="timer">${icon("timer", "sm")} 倒计时设置</div>
         <div class="chip" data-act="tab" data-tab="locate">${icon("map", "sm")} 地图 / 轨迹</div>
       </div>
-      <div class="small muted" style="margin-top:11px">当前 ${st.counts.total} 人 · 存活躲藏者 ${st.counts.alive_hiders} 人</div>
+      <div class="small muted" style="margin-top:11px">当前 ${st.counts.total} 人 · 本场最少 ${g.min_players || 2} 人 · 存活躲藏者 ${st.counts.alive_hiders} 人</div>
+    </div>
+
+    <div class="section-label">身份 · 由你直接指定</div>
+    <div class="card">
+      <div class="small muted" style="margin-bottom:9px">不用抽签也能定：先在下面名单里逐个选角色，或一键把除抓捕者外的人全设为躲藏者。</div>
+      <div class="btn-row">
+        <button class="btn sm ghost" data-act="role-quick" data-role="all-hider">全员躲藏者</button>
+        <button class="btn sm ghost" data-act="role-quick" data-role="first-catcher">1 号当抓捕者</button>
+      </div>
+    </div>
+
+    <div class="section-label">倒计时 · 全局计时模式</div>
+    <div class="card">
+      <div class="segmented">
+        <button class="${(S.cd?.mode || "sequential") === "parallel" ? "" : "on"}" data-act="cd-mode" data-mode="sequential">${icon("timer", "sm")} 依次接棒</button>
+        <button class="${S.cd?.mode === "parallel" ? "on" : ""}" data-act="cd-mode" data-mode="parallel">${icon("layers", "sm")} 多段并行</button>
+      </div>
+      <div class="small muted" style="margin-top:9px">这是<b>全场统一</b>的计时方式；成员端「单独 / 三个并排」只是各自的显示偏好，切换不清零时间。</div>
+      <button class="btn sm ghost block" style="margin-top:9px" data-act="tab" data-tab="timer">${icon("pencil", "sm")} 去编辑段数与时长</button>
+    </div>
+
+    <div class="section-label">积分管理</div>
+    <div class="card">
+      <button class="btn sm block" data-act="open-score">${icon("pencil", "sm")} 手动修改每个人积分</button>
     </div>
 
     <div class="section-label">公开全员定位</div>
@@ -916,8 +974,9 @@ function renderAdmin() {
       <div class="btn-row">
         <button class="btn sm" data-act="admin-gen-balls" data-count="20">${icon("ball", "sm")} 生成 20 颗</button>
         <button class="btn sm ghost" data-act="admin-print-balls">${icon("camera", "sm")} 查看 / 打印</button>
+        <button class="btn sm ghost" data-act="open-balls">${icon("settings", "sm")} 管理小球</button>
       </div>
-      <div class="small muted" style="margin-top:9px">打印后放到赛场各处，每颗球只能扫一次。</div>
+      <div class="small muted" style="margin-top:9px">每颗球的码与二维码严格一一对应；可改名、重置已扫状态、删除。</div>
     </div>
 
     <div class="section-label">成员邀请码 · 未用 ${a.invites.filter((x) => !x.used_by).length}</div>
@@ -962,15 +1021,93 @@ async function showBalls() {
     showModal(`
       <div class="modal-head"><b>道具球二维码 · ${r.count} 颗</b>
         <button class="modal-close" data-act="modal-close">${icon("close", "sm")}</button></div>
-      <div class="no-print" style="margin-bottom:11px"><button class="btn sm ghost block" onclick="window.print()">🖨 打印这一页</button></div>
+      <div class="no-print" style="margin-bottom:11px">
+        <button class="btn sm ghost block" onclick="window.print()">🖨 打印这一页</button>
+        <div class="tiny muted" style="margin-top:6px">点任意二维码可放大，方便手机扫；每个码与球一一对应。</div>
+      </div>
       <div class="qr-grid">
         ${r.items.map((x) => `<div class="qr-item">
-          <div class="label">${esc(x.label)}</div>${x.svg}
+          <div class="label">${esc(x.label)}</div>
+          <img class="qr-img" src="${x.qr}" alt="${esc(x.code)}"
+               data-act="qr-zoom" data-src="${x.qr}" data-code="${esc(x.code)}" data-label="${esc(x.label)}">
           <div class="code mono">${esc(x.code)}</div>
           <div class="tiny muted">${x.used_by ? "已使用" : "未使用"}</div>
         </div>`).join("") || `<div class="empty">还没有生成小球</div>`}
       </div>`);
   } catch (e) { toast(e.message); }
+}
+
+async function showQrZoom(el) {
+  showModal(`
+    <div class="modal-head"><b>${esc(el.dataset.label || "二维码")}</b>
+      <button class="modal-close" data-act="modal-close">${icon("close", "sm")}</button></div>
+    <div class="qr-zoom"><img class="qr-img" src="${el.dataset.src}" alt="二维码"></div>
+    <div class="center mono small" style="margin-top:10px">${esc(el.dataset.code)}</div>
+    <button class="btn ghost block" style="margin-top:10px" data-act="copy-code" data-code="${attr(el.dataset.code)}">${icon("copy", "sm")} 复制球码</button>`);
+}
+
+/* ---------------------------------------------------------------- v3 管理弹窗 */
+async function showScoreManager() {
+  const id = gid(); if (!id) return;
+  try {
+    const p = await API.players(id);
+    showModal(`
+      <div class="modal-head"><b>积分管理 · 手动改分</b>
+        <button class="modal-close" data-act="modal-close">${icon("close", "sm")}</button></div>
+      <div class="small muted" style="margin-bottom:10px">改分会自动记入积分流水，可追溯。正数加分、负数扣分。</div>
+      ${p.items.map((u) => `<div class="mgr-row">
+        <span class="grow"><span class="name">${esc(u.display_name)}</span>
+          <div class="meta">${roleCn(u.role)} · 当前 ${u.score} 分</div></span>
+        <input type="number" step="0.5" value="${u.score}" data-score-input="${u.user_id}">
+        <button class="btn xs" data-act="score-set" data-uid="${u.user_id}">设为</button>
+        <button class="btn xs ghost" data-act="score-delta" data-uid="${u.user_id}" data-delta="0.5">+0.5</button>
+        <button class="btn xs ghost" data-act="score-delta" data-uid="${u.user_id}" data-delta="-0.5">−0.5</button>
+      </div>`).join("") || `<div class="empty">暂无成员</div>`}
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn sm ghost" data-act="modal-close">关闭</button>
+        <button class="btn sm ghost" data-act="refresh">${icon("reset", "sm")} 刷新榜单</button>
+      </div>`);
+  } catch (e) { toast(e.message); }
+}
+
+async function showBallManager() {
+  const id = gid(); if (!id) return;
+  try {
+    const r = await API.balls(id);
+    showModal(`
+      <div class="modal-head"><b>小球管理 · ${r.count} 颗</b>
+        <button class="modal-close" data-act="modal-close">${icon("close", "sm")}</button></div>
+      <div class="btn-row" style="margin-bottom:10px">
+        <button class="btn sm" data-act="admin-gen-balls" data-count="10">${icon("plus", "sm")} 再生成 10 颗</button>
+        <button class="btn sm ghost" data-act="ball-reset-all">${icon("reset", "sm")} 全部重置</button>
+        <button class="btn sm ghost" data-act="admin-print-balls">${icon("camera", "sm")} 看二维码</button>
+      </div>
+      ${r.items.map((x) => `<div class="mgr-row">
+        <span class="grow"><span class="name">${esc(x.label)}</span>
+          <div class="meta mono">${esc(x.code)} · ${x.used_by ? "已使用" : "未使用"}</div></span>
+        <input type="text" value="${esc(x.label)}" data-ball-label="${esc(x.code)}" style="width:86px">
+        <button class="btn xs ghost" data-act="ball-rename" data-code="${esc(x.code)}">改名</button>
+        <button class="btn xs ghost" data-act="ball-reset" data-code="${esc(x.code)}">重置</button>
+        <button class="btn xs soft" data-act="ball-del" data-code="${esc(x.code)}">删除</button>
+      </div>`).join("") || `<div class="empty">还没有小球</div>`}`);
+  } catch (e) { toast(e.message); }
+}
+
+function permissionGate() {
+  return new Promise((resolve) => {
+    S._permResolve = resolve;
+    showModal(`
+      <div class="modal-head"><b>开启必要权限</b></div>
+      <div class="small muted">第一次使用，需要你同意以下权限。可以全部一次性开启，之后点按钮时不会再打断你。</div>
+      <div class="perm-list">
+        <div class="perm-item"><span class="pico">📷</span><div><b>相机</b><span>扫道具球二维码、扫玩家身份码</span></div></div>
+        <div class="perm-item"><span class="pico">📍</span><div><b>位置信息（使用期间）</b><span>地图定位、全程轨迹、30 米探测、定位雷达</span></div></div>
+        <div class="perm-item"><span class="pico">🔒</span><div><b>安全上下文</b><span>页面走 https://m.starven.cn，摄像头与 GPS 才可用</span></div></div>
+      </div>
+      ${GEO.isSecure ? "" : `<div class="notice">⚠️ 当前不是 HTTPS，浏览器会直接禁用摄像头与定位；请用 https:// 打开。</div>`}
+      <button class="btn block" data-act="perm-grant">${icon("check", "sm")} 同意并开启</button>
+      <button class="btn ghost block" style="margin-top:8px" data-act="perm-skip">稍后再说</button>`);
+  });
 }
 
 /* ---------------------------------------------------------------- 事件 */
@@ -1011,6 +1148,7 @@ document.addEventListener("click", async (ev) => {
         else toast("请用浏览器菜单中的「添加到主屏幕」"); break;
       }
       // ---- 倒计时 ----
+      case "cd-view": switchCdView(el.dataset.view); break;
       case "cd-mode": {
         if (!S.user.is_admin) return;
         await API.cdMode(gid(), el.dataset.mode);
@@ -1099,13 +1237,75 @@ document.addEventListener("click", async (ev) => {
         setTimeout(() => URL.revokeObjectURL(url), 3000);
         toast("轨迹文件已下载"); break;
       }
+      // ---- v3 管理 ----
+      case "qr-zoom": await showQrZoom(el); break;
+      case "open-score": await showScoreManager(); break;
+      case "open-balls": await showBallManager(); break;
+      case "perm-grant": {
+        S.permState = await PERM.requestAll();
+        localStorage.setItem(PERM.PERM_KEY, "1");
+        closeModal(); if (S._permResolve) S._permResolve();
+        toast(S.permState.camera === "granted" ? "相机与定位已开启" : "有权限未允许，可在「我的」里重新申请");
+        break;
+      }
+      case "perm-skip": {
+        localStorage.setItem(PERM.PERM_KEY, "skipped");
+        closeModal(); if (S._permResolve) S._permResolve();
+        toast("已跳过，可在「我的 → 重新申请权限」补开"); break;
+      }
+      case "perm-reask": {
+        localStorage.removeItem(PERM.PERM_KEY);
+        await permissionGate(); break;
+      }
+      case "score-set": {
+        const v = Number(view.querySelector(`[data-score-input="${el.dataset.uid}"]`)?.value || 0);
+        await API.setScore(gid(), { user_id: Number(el.dataset.uid), score: v, reason: "手动设为 " + v });
+        toast("积分已更新"); await refresh(true); await showScoreManager(); break;
+      }
+      case "score-delta": {
+        await API.setScore(gid(), { user_id: Number(el.dataset.uid),
+          delta: Number(el.dataset.delta), reason: "手动增减" });
+        toast("积分已更新"); await refresh(true); await showScoreManager(); break;
+      }
+      case "ball-rename": {
+        const v = view.querySelector(`[data-ball-label="${el.dataset.code}"]`)?.value?.trim();
+        if (!v) { toast("请输入球名"); return; }
+        await API.renameBall(gid(), el.dataset.code, v);
+        toast("已改名"); await showBallManager(); break;
+      }
+      case "ball-reset": {
+        await API.resetBall(gid(), el.dataset.code);
+        toast("已重置为未使用"); await showBallManager(); break;
+      }
+      case "ball-del": {
+        await API.delBall(gid(), el.dataset.code);
+        toast("已删除"); await loadAdmin(); await showBallManager(); break;
+      }
+      case "ball-reset-all": {
+        await API.resetAllBalls(gid());
+        toast("全部球已重置"); await showBallManager(); break;
+      }
+      case "role-quick": {
+        const ps = S.adminData.players || [];
+        if (!ps.length) { toast("名单还是空的"); return; }
+        if (el.dataset.role === "all-hider") {
+          await API.bulkRoles(gid(), { hider_ids: ps.map((p) => p.user_id) });
+        } else {
+          await API.bulkRoles(gid(), {
+            catcher_ids: [ps[0].user_id],
+            hider_ids: ps.slice(1).map((p) => p.user_id),
+          });
+        }
+        toast("角色已更新"); await refresh(); await loadAdmin(); break;
+      }
       // ---- 管理 ----
       case "use-location": {
         try {
           const p = await GEO.once();
           $("#center-lat").value = p.lat.toFixed(6);
           $("#center-lng").value = p.lng.toFixed(6);
-          toast("已填入当前位置");
+          const cs = $("#coord-system"); if (cs) cs.value = "WGS84";
+          toast("已填入当前位置（GPS 为 WGS-84）");
         } catch (e) { toast(e.message); }
         break;
       }
@@ -1164,6 +1364,8 @@ document.addEventListener("submit", async (ev) => {
           name: d.name, center_lat: Number(d.center_lat), center_lng: Number(d.center_lng),
           radius_m: Number(d.radius_m || 150), hide_minutes: Number(d.hide_minutes || 30),
           chase_minutes: Number(d.chase_minutes || 30),
+          min_players: Number(d.min_players || 2),
+          coord_system: d.coord_system || "WGS84",
         });
         toast("比赛已创建，把比赛码发给大家吧");
         await refresh(); await loadAdmin(); render(); break;

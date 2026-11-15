@@ -99,4 +99,13 @@ export const API = {
   addBalls: (gid, count) => req(`admin/games/${gid}/balls`, { method: "POST", body: { count } }),
   balls: (gid) => req(`admin/games/${gid}/balls`),
   catchByAdmin: (gid, hider_id) => req(`admin/games/${gid}/catch`, { method: "POST", body: { hider_id } }),
+  // v3 管理：积分 / 小球 / 批量角色
+  setScore: (gid, d) => req(`admin/games/${gid}/score`, { method: "PATCH", body: d }),
+  delBall: (gid, code) => req(`admin/games/${gid}/balls/${encodeURIComponent(code)}`, { method: "DELETE" }),
+  resetBall: (gid, code) => req(`admin/games/${gid}/balls/${encodeURIComponent(code)}/reset`,
+    { method: "POST", body: {} }),
+  renameBall: (gid, code, label) => req(`admin/games/${gid}/balls/${encodeURIComponent(code)}`,
+    { method: "PATCH", body: { label } }),
+  resetAllBalls: (gid) => req(`admin/games/${gid}/balls/reset-all`, { method: "POST", body: {} }),
+  bulkRoles: (gid, d) => req(`admin/games/${gid}/roles`, { method: "POST", body: d }),
 };

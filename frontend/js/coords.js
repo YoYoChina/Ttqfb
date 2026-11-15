@@ -44,3 +44,24 @@ export function toMapLatLng(lat, lng, crs = "WGS84") {
 
 export const fmtCoord = (v) => (typeof v === "number" ? v.toFixed(6) : "—");
 export const fmtAccuracy = (v) => (v == null ? "—" : `±${Math.round(v)} m`);
+
+
+/** GCJ-02 -> WGS-84（迭代反解，误差 < 1 米）。
+ *  管理员从高德/腾讯复制的坐标是 GCJ-02，入库前必须转成 WGS-84，
+ *  才能和手机 GPS 上报的坐标对齐，场地圆圈才不会和轨迹错开几百米。 */
+export function gcj02ToWgs84(lat, lng) {
+  const glat = Number(lat), glng = Number(lng);
+  let wlat = glat, wlng = glng;
+  for (let i = 0; i < 6; i++) {
+    const g = wgs84ToGcj02(wlat, wlng);
+    wlat -= g[0] - glat;
+    wlng -= g[1] - glng;
+  }
+  return [wlat, wlng];
+}
+
+/** 按用户选择的坐标系归一化到 WGS-84 */
+export function normalizeInput(lat, lng, crs = "WGS84") {
+  return String(crs).toUpperCase().indexOf("GCJ") >= 0
+    ? gcj02ToWgs84(lat, lng) : [Number(lat), Number(lng)];
+}

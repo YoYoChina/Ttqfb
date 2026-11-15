@@ -13,12 +13,14 @@ let trackLayer = null;
 let boundsLayer = null;
 let currentCrs = "WGS84";
 let currentCenter = null;
+let rawCenter = null;
 
 export function isReady() { return map !== null; }
 
 export function initMap(domId, center, tiles) {
   destroy();
   currentCenter = center;
+  rawCenter = { lat: center.lat, lng: center.lng, radius_m: center.radius_m || 150 };
   currentCrs = tiles.crs || "WGS84";
   const [clat, clng] = toMapLatLng(center.lat, center.lng, currentCrs);
   map = L.map(domId, {
@@ -31,19 +33,27 @@ export function initMap(domId, center, tiles) {
   trackLayer = L.layerGroup().addTo(map);
   boundsLayer = L.layerGroup().addTo(map);
   applyTiles(tiles);
-  // 场地边界圈（无论有没有瓦片都能看见范围）
-  L.circle([clat, clng], {
-    radius: center.radius_m || 150, color: "#C97B5A", weight: 1.4,
-    dashArray: "5 6", fillColor: "#C97B5A", fillOpacity: .045,
-  }).addTo(boundsLayer);
+  drawBounds();   // 场地边界圈（无论有没有瓦片都能看见范围）
   setTimeout(() => { if (map) map.invalidateSize(); }, 120);
   return map;
+}
+
+/** 用【当前瓦片源坐标系】重画场地圈：切换瓦片源后不再和轨迹错开 */
+export function drawBounds() {
+  if (!map || !boundsLayer || !rawCenter) return;
+  boundsLayer.clearLayers();
+  const [blat, blng] = toMapLatLng(rawCenter.lat, rawCenter.lng, currentCrs);
+  L.circle([blat, blng], {
+    radius: rawCenter.radius_m, color: "#C97B5A", weight: 1.6,
+    dashArray: "5 6", fillColor: "#C97B5A", fillOpacity: .05,
+  }).addTo(boundsLayer);
 }
 
 export function applyTiles(tiles) {
   if (!map) return;
   if (tileLayer) { map.removeLayer(tileLayer); tileLayer = null; }
   currentCrs = tiles.crs || "WGS84";
+  drawBounds();
   if (!tiles.url) {
     // 无瓦片：纯轨迹画布，仍可缩放平移，背景用柔和网格
     document.getElementById("leaflet-map")?.classList.add("offline-map");
