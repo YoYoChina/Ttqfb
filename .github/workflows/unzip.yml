@@ -123,7 +123,3 @@ jobs:
           chmod +x android/gradlew
           cd android && ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
-        with:
-          name: starven-apk-debug
-          path: android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
