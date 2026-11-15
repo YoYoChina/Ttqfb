@@ -17,11 +17,29 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: 安装 SDK
+      # 不用 android-actions/setup-android：它在 cmdline-tools 16.0 上
+      # 会去装早已下线的 "tools" 包，卡在许可协议并以退出码 1 失败。
+      # ubuntu-latest runner 自带 Android SDK，直接找到 sdkmanager 用即可。
+      - name: 准备 Android SDK
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          set -euo pipefail
+          SDKROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SM="$(find "$SDKROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -1)" || true
+          if [ -z "$SM" ]; then
+            echo "✗ 没找到 sdkmanager，SDK 目录如下："
+            ls -la "$SDKROOT" || true
+            exit 1
+          fi
+          echo "sdkmanager: $SM"
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          if [ ! -d "$SDKROOT/platforms/android-34" ] || [ ! -d "$SDKROOT/build-tools/34.0.0" ]; then
+            yes | "$SM" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+          fi
+          test -d "$SDKROOT/platforms/android-34" || { echo "✗ android-34 未就绪"; exit 1; }
+          echo "ANDROID_HOME=$SDKROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDKROOT" >> "$GITHUB_ENV"
+          echo "$SDKROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "✓ SDK 就绪"
       - name: 安装 Gradle 8.4
         run: |
           curl -fL --retry 2 -o "$RUNNER_TEMP/g.zip" \
