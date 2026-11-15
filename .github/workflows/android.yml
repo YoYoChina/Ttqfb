@@ -1,0 +1,39 @@
+name: 打包 Android APK（权限修复版 v3）
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 安装 SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
+      - name: 安装 Gradle 8.4
+        run: |
+          curl -fL --retry 2 -o "$RUNNER_TEMP/g.zip" \
+            https://services.gradle.org/distributions/gradle-8.4-bin.zip
+          unzip -q "$RUNNER_TEMP/g.zip" -d "$RUNNER_TEMP/g"
+          echo "$RUNNER_TEMP/g/gradle-8.4/bin" >> "$GITHUB_PATH"
+      - name: 生成工程（权限声明 + 首次申请 + WebView 放行）
+        run: bash make-android.sh
+      - name: 编译 APK
+        run: cd android && gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starven-hide-and-seek-v3
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
