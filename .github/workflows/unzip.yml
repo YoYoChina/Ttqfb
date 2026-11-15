@@ -1,0 +1,61 @@
+name: 解压前端包并补齐目录
+
+# 用途：手机网页端无法上传文件夹，只能上传 zip。
+# 先在仓库网页手动新建本文件（路径 .github/workflows/unzip.yml），
+# 再把「星湾APP_GitHub前端.zip」上传到仓库根，本工作流会自动解压、
+# 把 frontend/ 与 .github/workflows/ 补齐，并删掉 zip 提交回去。
+#
+# 注意：GitHub 规定用 GITHUB_TOKEN 产生的推送不会再触发其它工作流，
+# 所以解压完成后，请到 Actions 手动点一次「部署 PWA 到 GitHub Pages」
+# 和「打包 Android APK（Capacitor）」的 Run workflow。
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+
+      - name: 解压 zip 并合并到仓库根目录
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=( *.zip )
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "没有待解压的 zip，跳过"
+            exit 0
+          fi
+          for z in "${zips[@]}"; do
+            echo "解压 $z"
+            unzip -o "$z" -d .
+            rm -f "$z"
+          done
+          # zip 自带一层顶层目录：把里面全部内容（含 .github 等隐藏目录）合并到仓库根
+          for d in */; do
+            if [ -d "$d/frontend" ] || [ -d "$d/.github" ]; then
+              cp -a "$d." .
+              rm -rf "$d"
+            fi
+          done
+          echo "目录已补齐："
+          ls -la
+
+      - name: 提交结果
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "没有变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "自动解压前端包，补齐 frontend 与 workflows"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
