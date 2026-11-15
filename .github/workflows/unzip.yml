@@ -1,13 +1,12 @@
-name: 解压前端包并补齐目录
+name: 解压前端包 · 发布 PWA · 打包 APK
 
-# 用途：手机网页端无法上传文件夹，只能上传 zip。
-# 先在仓库网页手动新建本文件（路径 .github/workflows/unzip.yml），
-# 再把「星湾APP_GitHub前端.zip」上传到仓库根，本工作流会自动解压、
-# 把 frontend/ 与 .github/workflows/ 补齐，并删掉 zip 提交回去。
+# 修正版：上一版卡在 git push —— GITHUB_TOKEN 天生不能提交
+# .github/workflows/*.yml（"without workflows permission"）。
+# 本版把 .github/ 从提交里排除，机器人只推 frontend/ 等普通文件；
+# 同时把 Pages 发布与 APK 打包合并进同一次运行，不用再补另外两个 yml。
 #
-# 注意：GitHub 规定用 GITHUB_TOKEN 产生的推送不会再触发其它工作流，
-# 所以解压完成后，请到 Actions 手动点一次「部署 PWA 到 GitHub Pages」
-# 和「打包 Android APK（Capacitor）」的 Run workflow。
+# 用法：网页编辑 .github/workflows/unzip.yml，全选替换成这份内容，提交即可。
+# 仓库根目录里的 zip 不用重传（上一次提交被拒，仓库状态没变）。
 
 on:
   push:
@@ -15,6 +14,12 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: starven-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   extract:
@@ -29,33 +34,96 @@ jobs:
           shopt -s nullglob
           zips=( *.zip )
           if [ ${#zips[@]} -eq 0 ]; then
-            echo "没有待解压的 zip，跳过"
+            echo "没有待解压的 zip，跳过解压"
             exit 0
           fi
           for z in "${zips[@]}"; do
             echo "解压 $z"
-            unzip -o "$z" -d .
+            unzip -oq "$z" -d .
             rm -f "$z"
           done
-          # zip 自带一层顶层目录：把里面全部内容（含 .github 等隐藏目录）合并到仓库根
+          # zip 自带一层顶层目录：把内容（含隐藏的 .github/）合并到仓库根
           for d in */; do
             if [ -d "$d/frontend" ] || [ -d "$d/.github" ]; then
               cp -a "$d." .
               rm -rf "$d"
             fi
           done
-          echo "目录已补齐："
-          ls -la
+          test -f frontend/index.html || { echo "✗ 解压后没找到 frontend/index.html"; exit 1; }
+          # zip 里的文件权限是 777，统一规范成 644
+          find frontend -type f -exec chmod 644 {} +
+          echo "✓ 解压完成，frontend/ 已就绪"
 
-      - name: 提交结果
+      - name: 把解压结果交给后续任务（同一 runner 不共享文件）
+        uses: actions/upload-artifact@v4
+        with:
+          name: starven-site
+          path: |
+            frontend/
+            package.json
+            package-lock.json
+            capacitor.config.json
+          if-no-files-found: error
+
+      - name: 提交（排除 .github，绕开 workflows 权限限制）
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git reset -q -- .github/
           if git diff --staged --quiet; then
             echo "没有变化，跳过提交"
             exit 0
           fi
-          git commit -m "自动解压前端包，补齐 frontend 与 workflows"
+          git commit -m "自动解压前端包，补齐 frontend 目录"
           git push origin HEAD:"${GITHUB_REF_NAME}"
+
+  pages:
+    needs: extract
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 取回解压结果
+        uses: actions/download-artifact@v4
+        with:
+          name: starven-site
+          path: site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/frontend
+      - name: 发布 Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  apk:
+    needs: extract
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取回解压结果
+        uses: actions/download-artifact@v4
+        with:
+          name: starven-site
+          path: .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: |
+          npx cap add android
+          npx cap sync android
+      - run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starven-apk-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
